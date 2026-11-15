@@ -1,0 +1,248 @@
+# Shared method protocol; hardware budgets still require actual GPU trials.
+name: NavReg
+method: Naive RAG
+status: first_implementation
+
+serialization:
+  version: navreg-fixed-serialization-v1
+  kg: subject_relation_value_qualifiers_rank
+  table: markdown_with_page_section_headers_and_original_row_coordinates
+  infobox: page_section_and_field_value_pairs
+  input_scope: complete_corpus_without_qa_or_gold
+
+embedding_models:
+  large:
+    model_id: BAAI/bge-large-en-v1.5
+    revision: d4aa6901d3a41ba39fb536a557fa166f842b0e09
+    dimensions: 1024
+    max_input_tokens: 512
+    query_prefix: 'Represent this sentence for searching relevant passages: '
+    passage_prefix: ''
+  m3:
+    model_id: BAAI/bge-m3
+    revision: 5617a9f61b028005a4858fdac845db406aefb181
+    dimensions: 1024
+    max_input_tokens: 8192
+    query_prefix: ''
+    passage_prefix: ''
+    dense: true
+    sparse: false
+    colbert: false
+  device: cuda
+  metadata_checked_on: '2026-11-14'
+  pooling: cls_from_official_model_modules
+  normalize_embeddings: true
+  precision: float32  # both published model configs default to float32
+  batch_size: 1  # conservative startup default; tune explicitly after GPU trial
+
+chunking:
+  protocol: per_embedding_model_max_input_cell_prefix100_v2
+  token_budget_source: embedding_models.<selected_model>.max_input_tokens
+  tokenizer: native_embedding_model_tokenizer
+  include_context_in_budget: true
+  include_special_tokens_in_budget: true
+  preserve_original_coordinates: true
+  silent_truncation: false  # only the explicit cell-prefix rule below discards content
+  cell_value_max_tokens: 100
+  cell_value_scope: [table_data_cell_text, infobox_field_value]
+  cell_value_tokenizer: selected_embedding_model_tokenizer
+  cell_value_include_special_tokens: false
+  cell_value_overflow: keep_first_100_tokens_discard_tail
+  cell_value_truncation_stage: rendered_retrieval_value_before_chunk_packing
+  preserve_full_source_for_generation: true
+  overlap: 0  # body content; repeated title/header context is allowed
+  pack_within_source_only: true
+  table_policy: pack_complete_rows_with_all_columns
+  repeat_context: [page_title, section_path, caption, relevant_column_headers, source_row_index]
+  wide_row_policy: greedy_consecutive_columns_left_to_right_when_row_exceeds_budget
+  repeat_identity_columns: false
+  infobox_policy: pack_field_rows_and_repeat_entity_and_active_internal_header
+  kg_qualifier_separator: '; '  # existing fixed serialization, not a new special token
+  kg_statement_separator: "\n\n"
+  remaining_context_or_kg_overflow: error_with_source_coordinates
+
+index:
+  backend: faiss
+  device: cuda
+  unify_source_types: true
+  separate_per_embedding_model: true
+  index_type: IndexFlatIP
+  distance_metric: inner_product
+  similarity: cosine  # inner product of L2-normalized document/query vectors
+  vector_dtype: float32
+
+retrieval:
+  stages: 1
+  reranker: false
+  hybrid_search: false
+  query_rewriting: false
+  graph_traversal: false
+  chunk_k: 5
+  chunk_k_values: [5, 10, 20, 30, 40, 50, 60, 70, 80, 100]
+  chunk_order: cosine_descending
+  tie_breaking: pending_observation_in_trial
+  context_selection: top_k_chunks_restore_complete_parents_then_deduplicate
+  parent_order_in_context: first_occurrence_in_chunk_ranking
+  refill_after_parent_deduplication: false
+  evaluation_parent_k: 100
+  parent_ranking: maximum_chunk_cosine
+  evaluation_extra_candidates_enter_context: false
+
+generation:
+  backend: huggingface  # or openai_api
+  input_modality: text
+  context_token_budget: null  # Hugging Face: resolve from deployment; API: provider defaults
+  max_new_tokens: null  # Hugging Face: resolve from deployment and sampling profile
+  context_overflow: report_error_without_automatic_k_or_evidence_changes
+  k_context_policy_status: pending_trial
+  silently_drop_context: false
+  request_timeout_seconds: 60  # total wall-clock deadline for each generation attempt
+  retry_delay_seconds: 5  # fixed delay before every retry, excluded from question latency
+  retries: 3  # additional retries after the first attempt; at most four attempts
+  retry_on: [transient_transport_error, rate_limit, temporary_server_error, request_timeout]
+  retry_invalid_output_or_citation: false
+  invalid_output_status: failed
+  failed_prediction_policy: empty_answers_and_citations_with_only_legal_retrieved_ids
+  prompts:
+    system_file: ../prompts/system.txt
+    user_file: ../prompts/answer.txt
+    examples_file: ../prompts/examples.json
+  few_shot_examples: 3
+  prompt_status: defined
+  response_format: json_answers_and_citation_labels
+  huggingface:
+    model_id: Qwen/Qwen3.8-27B-FP8
+    repository_url: https://huggingface.co/Qwen/Qwen3.8-27B-FP8
+    download_source: huggingface_official
+    revision: 'c3a462cc3d38cf351f3b26cbd763469eeb74ef81'
+    metadata_checked_on: '2026-11-14'
+    chat_template: official_model_template
+    inference_backend: vllm  # installed; local real-weight debugging completed
+    engine_version: '0.33.0'  # installed with its matching PyTorch/CUDA dependencies
+    precision: fp8  # server checkpoint weight format, not activation or KV dtype
+    quantization: auto_from_checkpoint
+    reasoning_parser: qwen3
+    profile: non_thinking  # default; thinking requires an explicit experiment override
+    profile_source: https://huggingface.co/Qwen/Qwen3.8-27B/blob/37561816e66b5b9153b1b64c10968c18c1e6f4a0/README.md
+    native_context_tokens: 262144  # input plus generated thinking/final output
+    native_precision: bfloat16
+    deployment_by_environment:
+      local: local_debug_nvfp4
+      cluster: cluster_fp8
+    deployment_profiles:
+      local_debug_nvfp4:
+        purpose: debug_only
+        model_id: nvidia/Qwen3.8-27B-NVFP4
+        revision: '482ca0f3832238542f8f5295dde86b5f22711d80'
+        publisher: NVIDIA  # quantization of the Qwen checkpoint, not a Qwen 4-bit release
+        weight_format: mixed_nvfp4_fp8
+        quantization: auto_from_checkpoint
+        unquantized_dtype: bfloat16
+        kv_cache_dtype: bfloat16
+        context_window_tokens: 49152
+        input_token_budget: 40960  # same evidence budget for the two sampling modes
+        max_new_tokens_by_mode:
+          non_thinking: 2048
+          thinking: 8192  # reasoning plus final answer, not reasoning alone
+        tensor_parallel_size: 1
+        initial_max_num_seqs: 1
+        enforce_eager: true
+        gpu_memory_utilization: 0.84  # local 5090 trial; embedding and Faiss coexist
+        kernel_config:
+          enable_flashinfer_autotune: false  # local functional debugging; cluster uses engine defaults
+        budget_status: initial_estimate_pending_hardware_trial
+        checkpoint_safetensors_file_bytes: 21921697280
+        documentation_url: https://huggingface.co/nvidia/Qwen3.8-27B-NVFP4
+      cluster_fp8:
+        purpose: formal_experiment
+        model_id: Qwen/Qwen3.8-27B-FP8
+        revision: 'c3a462cc3d38cf351f3b26cbd763469eeb74ef81'
+        publisher: Qwen
+        weight_format: fp8_block128
+        quantization: auto_from_checkpoint
+        unquantized_dtype: bfloat16
+        kv_cache_dtype: bfloat16
+        context_window_tokens: 262144
+        input_token_budget: 229376  # complete prompt; 32768 reserved for generation
+        max_new_tokens_by_mode:
+          non_thinking: 2048
+          thinking: 32768  # reasoning plus final answer
+        tensor_parallel_size: 1
+        initial_max_num_seqs: 1
+        budget_status: target_pending_A100_80GB_trial
+        checkpoint_safetensors_file_bytes: 30866866928
+        documentation_url: https://huggingface.co/Qwen/Qwen3.8-27B-FP8
+    speculative_decoding: false
+    reasoning_output_policy: separate_final_json_count_reasoning_tokens_and_discard_reasoning_text
+    sampling_profiles:
+      non_thinking:
+        enable_thinking: false
+        preserve_thinking: true
+        do_sample: true
+        temperature: 0.7
+        top_p: 0.80
+        top_k: 20
+        min_p: 0.0
+        presence_penalty: 1.5
+        repetition_penalty: 1.0
+      thinking:
+        enable_thinking: true
+        reasoning_effort: xhigh
+        preserve_thinking: true
+        do_sample: true
+        temperature: 1.0
+        top_p: 0.95
+        top_k: 20
+        min_p: 0.0
+        presence_penalty: 0.0
+        repetition_penalty: 1.0
+    require_all_profile_parameters_supported: true
+  openai_api:
+    model_id: gpt-6-luna
+    model_snapshot: null  # no separate dated snapshot is currently documented
+    base_url: https://api.openai.com/v1
+    endpoint: responses
+    api_key_env: OPENAI_API_KEY  # environment variable name, never a key value
+    request_timeout_seconds: 60  # mirrors the common per-attempt total deadline
+    transport_auto_retries: 0  # all retries must be visible in method telemetry
+    parameters: {}  # provider-default generation parameters; record returned settings
+    request_options:  # explicit tool/storage controls, not sampling overrides
+      tools: []
+      tool_choice: none
+      store: false
+    documented_default_reasoning_effort: medium
+    seed_parameter: unsupported_in_current_responses_schema
+    docs_checked_on: '2026-11-14'
+    lifecycle_at_check: active
+    announced_shutdown_date: null
+    documentation_url: https://developers.openai.com/api/docs/models/gpt-6-luna
+
+telemetry:
+  trace_protocol: navreg-trace-v1
+  metrics: [llm_tokens_per_question, llm_calls_per_question, end_to_end_latency]
+  latency_aggregation: mean
+  exclude_retry_wait_from_latency: true
+  record_retry_wait_seconds: true
+  record_all_attempts: true
+  unknown_usage: null
+  input_tokens_scope: complete_actual_prompt_including_cached_input
+  output_tokens_scope: all_generated_tokens_including_reasoning_and_final_content
+  reasoning_tokens_are_subset_of_output_tokens: true
+  reasoning_token_count_source: engine_usage_or_actual_generated_token_boundaries
+  persist_reasoning_text: false
+  response_storage: final_response_text_and_allowlisted_metadata_only
+
+execution:
+  profiles: [local, cluster]
+  questions_per_complete_experiment: 500
+  question_sharding_across_nodes: false
+  index_storage: files_on_local_disk_or_shared_cpu_storage
+  index_loading: independent_ram_and_gpu_copy_per_job
+  gpu_index_concurrency: single_owner_with_serialized_calls_or_batching
+  runs_per_command: 1  # one full 500-question experiment; no automatic repetition
+  run_seed: 0  # --seed overrides experiment execution.run_seed, then this default
+  question_order: seeded_shuffle_of_sorted_question_ids
+  local_question_seed: integer_linear_combination_v1
+  checkpoint: persist_each_question_and_all_attempts
+  resume: skip_committed_terminal_questions_with_identical_config
+  remote_inflight_on_crash: retain_attempt_and_unknown_usage_do_not_claim_exactly_once

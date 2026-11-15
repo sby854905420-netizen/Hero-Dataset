@@ -1,0 +1,8 @@
+# One complete experiment; memory and context budgets need hardware validation.
+status: first_implementation
+method: NavReg
+method_config: ../../baseline/NavReg/configs/method.yml
+embedding: large
+chunk_k: 5
+scope: full_dataset
+# Inherit method_config; run once without automatically sweeping K or seeds.

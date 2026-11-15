@@ -1,0 +1,19 @@
+# Local debug template. Relative paths resolve against this configuration directory.
+# Local NVFP4 is for debugging; a command defaults to all 500 questions once.
+profile: local
+paths:
+  data_root: ../Data
+  output_root: ../outputs
+  serialized_root: ../outputs/serialized
+  chunks_root: ../outputs/chunks
+  indexes_root: ../outputs/indexes
+  runs_root: ../outputs/runs
+  model_cache: null  # use the current user's Hugging Face cache outside this project
+execution:
+  conda_env: Hero
+  device: cuda
+  gpu_device: null  # Set at runtime if needed
+  embedding_batch_size: null  # inherit method batch_size=1 until GPU trial overrides it
+  generation_concurrency: 1  # first local debugging trial; not a formal throughput setting
+experiment_unit: full_dataset_per_task
+# NavReg resolves this environment to its local_debug_nvfp4 deployment profile.

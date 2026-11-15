@@ -1,0 +1,24 @@
+{
+  "judge_version": "hero-answer-equivalence-gpt-6-luna-v2-en",
+  "model_snapshot": "gpt-6-luna",
+  "snapshot_kind": "provider_alias_no_immutable_snapshot_published",
+  "parameters": {},
+  "backend": "openai_api",
+  "endpoint": "responses",
+  "api_key_env": "OPENAI_API_KEY",
+  "documented_default_reasoning_effort": "medium",
+  "reuse_confirmed_decisions": true,
+  "docs_checked_on": "2026-11-14",
+  "examples": [],
+  "status": "frozen",
+  "request_options": {
+    "tools": [],
+    "tool_choice": "none",
+    "store": false
+  },
+  "persist_reasoning_text": false,
+  "request_timeout_seconds": 60,
+  "retries": 3,
+  "retry_delay_seconds": 5,
+  "transport_auto_retries": 0
+}

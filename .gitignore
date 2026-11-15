@@ -1,0 +1,40 @@
+# Rebuildable runtime files and machine-specific settings.
+/outputs/
+/.cache/
+/models/
+/.env
+/.env.*
+!/.env.example
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+/build/
+/dist/
+
+# Local functional checks and temporary verification material are not published.
+tests/
+test_*.py
+*_test.py
+*.test.*
+/local_checks/
+/verification/
+/reports/
+/logs/
+/scripts/validate_data.sh
+/evaluation/validate_data.py
+
+# Existing NavReg environment/setup archives moved with the method directory.
+/baseline/NavReg/README.txt
+/baseline/NavReg/PROJECT_PLAN.txt
+/baseline/NavReg/SETUP_REPORT.txt
+/baseline/NavReg/verification.json
+/baseline/NavReg/CHECKSUMS.sha256
+/baseline/NavReg/conda-linux-64.lock.txt
+/baseline/NavReg/requirements-pip.lock.txt
+/baseline/NavReg/setup_logs/
+
+# Local implementation handbook; excluded from GitHub and release exports.
+/baseline/NavReg/IMPLEMENTATION_GUIDE_LOCAL.txt

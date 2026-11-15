@@ -1,0 +1,145 @@
+{
+  "version": "navreg-few-shot-v1",
+  "examples": [
+    {
+      "example_id": "demo_1",
+      "coverage": "KG date extraction",
+      "question": "What was Kelly Overton's date of birth?",
+      "evidence": "[DEMO1_E1] Citable: true\nType: KG\nSubject: Kelly Overton (Q461131)\nRelation: date of birth (P569)\nValue: 1978-08-28\nQualifiers: none\nRank: normal",
+      "response": {
+        "answers": [
+          "28 August 1978"
+        ],
+        "citations": [
+          "DEMO1_E1"
+        ]
+      },
+      "provenance": {
+        "human_question_id": "80",
+        "human_review_status": "approved",
+        "human_review_export": "HERO-v2.1-human-review-full-2026-11-11.json",
+        "human_question_and_answers_unchanged": true,
+        "historical_audit_quality": 5,
+        "historical_audit_disposition": "reserve",
+        "evidence": [
+          {
+            "label": "DEMO1_E1",
+            "source_type": "kb",
+            "source_record_id": "kb-record:1661075",
+            "evidence_ref": "kb-record:1661075#target=0",
+            "selector": {
+              "unit": "statement_target",
+              "target_index": 0,
+              "statement_guid": "Q461131$B0663DCD-0CA9-47B8-AB31-FB75547BBC50"
+            },
+            "upstream": {
+              "subject_qid": "Q461131",
+              "subject_label": "Kelly Overton",
+              "anchor_id": "Q461131",
+              "revision_id": 2302900646,
+              "revision_url": "https://www.wikidata.org/w/index.php?title=Q461131&oldid=2302900646"
+            }
+          }
+        ],
+        "question_not_in_test500": true,
+        "selected_source_not_in_test_repository": true
+      }
+    },
+    {
+      "example_id": "demo_2",
+      "coverage": "InfoBox multiple answers",
+      "question": "What countries is Mel Gibson a citizen of?",
+      "evidence": "[DEMO2_E1] Citable: true\nType: InfoBox\nPage: Mel Gibson\nSection: \nCitizenship: United States\nIreland",
+      "response": {
+        "answers": [
+          "United States",
+          "Ireland"
+        ],
+        "citations": [
+          "DEMO2_E1"
+        ]
+      },
+      "provenance": {
+        "human_question_id": "759",
+        "human_review_status": "approved",
+        "human_review_export": "HERO-v2.1-human-review-full-2026-11-11.json",
+        "human_question_and_answers_unchanged": true,
+        "historical_audit_quality": 5,
+        "historical_audit_disposition": "reserve",
+        "evidence": [
+          {
+            "label": "DEMO2_E1",
+            "source_type": "info",
+            "source_record_id": "info:44219:1281117491:0",
+            "evidence_ref": "info:44219:1281117491:0#field=Citizenship&occurrence=0",
+            "selector": {
+              "unit": "infobox_field",
+              "field": "Citizenship",
+              "field_occurrence": 0,
+              "row_index": 10
+            },
+            "upstream": {
+              "page_title": "Mel Gibson",
+              "page_id": 44219,
+              "section_path": [],
+              "anchor_id": "Q42229",
+              "revision_id": 1281117491,
+              "revision_url": "https://en.wikipedia.org/w/index.php?oldid=1281117491"
+            }
+          }
+        ],
+        "question_not_in_test500": true,
+        "selected_source_not_in_test_repository": true
+      }
+    },
+    {
+      "example_id": "demo_3",
+      "coverage": "Table column selection and yes/no judgment",
+      "question": "Has the movie The Godfather won any Academy Award?",
+      "evidence": "[DEMO3_E1] Citable: true\nType: Table\nPage: The Godfather (film series)\nSection: Reception > Accolades > Academy Awards\nCaption: The Godfather film series at the Academy Awards [ 48 ] [ 49 ] [ 50 ]\n\n| source_row_index (locator only) | C0: Award > Award | C1: Awards won > The Godfather | C2: Awards won > The Godfather Part II | C3: Awards won > The Godfather Part III |\n| --- | --- | --- | --- | --- |\n| 0 | Picture | Won | Won | Nominated |",
+      "response": {
+        "answers": [
+          "Yes"
+        ],
+        "citations": [
+          "DEMO3_E1"
+        ]
+      },
+      "provenance": {
+        "human_question_id": "7461",
+        "human_review_status": "corrected",
+        "human_review_export": "HERO-v2.1-human-review-full-2026-11-11.json",
+        "human_question_and_answers_unchanged": true,
+        "historical_audit_quality": 5,
+        "historical_audit_disposition": "reserve",
+        "evidence": [
+          {
+            "label": "DEMO3_E1",
+            "source_type": "table",
+            "source_record_id": "table:15072865:1275862106:3",
+            "evidence_ref": "table:15072865:1275862106:3#row=0",
+            "selector": {
+              "unit": "table_row",
+              "row_index": 0,
+              "whole_table": false
+            },
+            "upstream": {
+              "page_title": "The Godfather (film series)",
+              "page_id": 15072865,
+              "section_path": [
+                "Reception",
+                "Accolades",
+                "Academy Awards"
+              ],
+              "anchor_id": "Q3225260",
+              "revision_id": 1275862106,
+              "revision_url": "https://en.wikipedia.org/w/index.php?oldid=1275862106"
+            }
+          }
+        ],
+        "question_not_in_test500": true,
+        "selected_source_not_in_test_repository": true
+      }
+    }
+  ]
+}

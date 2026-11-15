@@ -1,0 +1,24 @@
+name: Hero
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11.18
+  - pip=26.2.2
+  - gcc_linux-64=14
+  - gxx_linux-64=14
+  - numpy=2.3.5
+  - cuda-version=13.0
+  - faiss-gpu=1.14.3=hae85ecf_201
+  - faiss=1.14.3=py311cuda130h77064fa_201_cuda
+  - libfaiss=1.14.3=cuda130h637db36_201_cuda
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu130
+      - torch==2.14.0
+      - sentence-transformers==6.3.0
+      - transformers==5.20.2
+      - huggingface-hub==2.4.0
+      - tqdm==4.70.1
+      - PyYAML==6.0.3
+      - httpx==0.28.1
+      - vllm==0.33.0
