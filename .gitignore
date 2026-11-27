@@ -26,6 +26,14 @@ test_*.py
 /scripts/validate_data.sh
 /evaluation/validate_data.py
 
+# Full corpora are distributed as versioned GitHub Release assets.
+/Data/data_repository/kg/kb.jsonl
+/Data/data_repository/tables/tables.jsonl
+/Data/data_repository/infoboxes/infoboxes.jsonl
+/Data/negative_samples/negative_t1/
+/Data/negative_samples/negative_t2/
+/Data/negative_samples/negative_t3/
+
 # Existing NavReg environment/setup archives moved with the method directory.
 /baseline/NavReg/README.txt
 /baseline/NavReg/PROJECT_PLAN.txt
