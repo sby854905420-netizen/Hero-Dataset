@@ -189,6 +189,32 @@ class OpenAIGenerator:
         await self.client.aclose()
 
 
+def _fla_identity():
+    import importlib.metadata
+    import inspect
+
+    try:
+        versions = {name: importlib.metadata.version(name) for name in ('fla-core', 'triton')}
+        from fla.ops.gated_delta_rule import chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
+    except ImportError:
+        raise ValueError('FLA acceleration requires fla-core and Triton; install the baseline dependencies in the active GPU environment') from None
+    from transformers.models.qwen3_5 import modeling_qwen3_5
+
+    kernels = {}
+    for name, wrapped, implementation in (
+        ('chunk', modeling_qwen3_5.torch_chunk_gated_delta_rule, chunk_gated_delta_rule),
+        ('recurrent', modeling_qwen3_5.torch_recurrent_gated_delta_rule, fused_recurrent_gated_delta_rule),
+    ):
+        # Transformers preserves the reference function's name even when FLA is bound.
+        while inspect.getclosurevars(wrapped).nonlocals.get('implementation') is not implementation:
+            wrapped = getattr(wrapped, '__wrapped__', None)
+            if wrapped is None:
+                raise ValueError(f'FLA {name} kernel is not active; repair the GPU environment and start a new Python process')
+        kernels[name] = implementation.__module__ + '.' + implementation.__name__
+    return {'backend': 'fla-core', 'version': versions['fla-core'],
+            'triton_version': versions['triton'], 'kernels': kernels}
+
+
 class TransformerGenerator:
     """Single-GPU prequantized NF4 inference; cancellation drains the worker."""
     def __init__(self, config):
@@ -204,6 +230,7 @@ class TransformerGenerator:
             raise ValueError('installed Transformers version differs from the experiment')
         if not torch.cuda.is_available() or torch.cuda.device_count() != 1 or not torch.cuda.is_bf16_supported():
             raise ValueError('Transformers BF16 generation requires one visible BF16-capable CUDA GPU')
+        linear_attention = _fla_identity()
         if hf['unquantized_dtype'] != 'bfloat16' or hf['quantization'] != 'bitsandbytes_nf4':
             raise ValueError('Transformers requires a prequantized NF4 checkpoint with BF16 compute')
         self.profile = hf['sampling_profiles'][hf['profile']]
@@ -262,6 +289,7 @@ class TransformerGenerator:
                          'max_new_tokens': self.max_tokens,
                          'dtype': 'bfloat16', 'device': 'cuda:0', 'attn_implementation': 'sdpa',
                          'use_kernels': False, 'disable_compile': True, 'quantization': quantization_identity,
+                         'linear_attention': linear_attention,
                          'reasoning_parser': 'qwen3_generated_token_boundaries',
                          'presence_penalty_scope': 'generated_tokens_only', 'input_modality': 'text'}
 

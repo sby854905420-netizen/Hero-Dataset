@@ -12,6 +12,8 @@ dependencies = [
   "numpy>=2.3,<2.4",
   "torch==2.14.0",
   "transformers==5.20.2",
+  "fla-core==0.6.0",
+  "triton==3.8.0",
   "huggingface-hub>=2.4,<3",
   "tqdm>=4.70,<5",
   "PyYAML>=6.0,<7",

@@ -256,9 +256,9 @@ async def run_experiment(config, directory=None, index_dir=None, serialized_dir=
                           'faiss_gpu_temp_memory_mib': GPU_TEMP_MEMORY_MIB}
                 if actual_path.exists():
                     old_identity = json.loads(actual_path.read_text())['generator']
-                    for key in ('backend', 'model', 'revision', 'version'):
+                    for key in ('backend', 'model', 'revision', 'version', 'linear_attention'):
                         if old_identity.get(key) != generator.identity.get(key):
-                            raise ValueError('runtime model or engine version changed during resume')
+                            raise ValueError('runtime model, engine or linear-attention kernels changed during resume')
                 else:
                     write_json(actual_path, actual)
                 print(f'Loaded runtime in {time.perf_counter() - loaded_at:.2f}s; run={directory}', flush=True)

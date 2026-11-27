@@ -8,13 +8,15 @@ Method rules are in `configs/method.yml` relative to this directory. Runtime pat
 
 ## Environment and serialization
 
-Use Conda `Hero` with Python 3.11. `environment.yml` specifies PyTorch 2.14.0/CUDA 13.0, Transformers 5.20.2, bitsandbytes 0.50.2, Accelerate, NumPy 2.3.5, GPU Faiss, and GCC/G++ 14. The CUDA/PyTorch/Faiss builds must match the target GPU; token budgets must be measured on that GPU. The API adapter uses HTTPX directly and does not require the OpenAI SDK.
+Use Conda `Hero` with Python 3.11. `environment.yml` specifies PyTorch 2.14.0/CUDA 13.0, Transformers 5.20.2, bitsandbytes 0.50.2, fla-core 0.6.0, Triton 3.8.0, Accelerate, NumPy 2.3.5, GPU Faiss, and GCC/G++ 14. The CUDA/PyTorch/Faiss builds must match the target GPU; token budgets must be measured on that GPU. The API adapter uses HTTPX directly and does not require the OpenAI SDK.
 
 ```bash
 conda env create -f baseline/NavReg/environment.yml
 conda activate Hero
 python -m pip install -e baseline/NavReg
 ```
+
+To upgrade an existing environment, activate `Hero` and rerun `python -m pip install -e baseline/NavReg`. Conda activation supplies GCC and `CC` for Triton compilation. The first generation on the target GPU compiles and warms its Triton kernels; use a small debug run with a fitting input budget before timing an experiment. Set `TRITON_CACHE_DIR` to a writable, persistent directory to retain that cache. Reuse requires a matching GPU architecture and software environment; A100/H100 must compile their own kernels instead of using compiled RTX 5090 binaries.
 
 First download and extract the [v2.0.0 full corpus](../../Data/data_repository/README.md). A Git clone does not include the large corpus JSONL files. Run from the repository root:
 
@@ -113,6 +115,8 @@ Example `provenance` records review status, original IDs, selectors, and upstrea
 
 The `huggingface` backend uses the same Unsloth checkpoint and official chat template on every machine, pinned to revision `8aa5f05d26b7205477066e1449e0af13f762a299`. Prequantized NF4 weights use bitsandbytes 0.50.2 with BF16 arithmetic, unquantized components, and KV cache. The loader verifies the checkpoint's NF4 configuration and the actual 4-bit modules. No CPU offload or speculative decoding is enabled. Effective model identity, quantization, engine, and sampling parameters are recorded.
 
+GatedDeltaNet chunk and recurrent linear attention use the tested combination `fla-core==0.6.0` and `triton==3.8.0`. Before loading weights, the adapter rejects missing packages or an inactive FLA implementation; `runtime.json` records package versions and the actual implementation under `linear_attention`. This accelerates linear attention; `causal_conv1d` may still use the Transformers fallback. The path keeps `use_kernels=False` and requires neither `nvcc`, Hugging Face `kernels`, nor `flash_attn`.
+
 The conservative startup settings are:
 
 | Total window | Complete input budget | Non-thinking output | Thinking output |
@@ -161,11 +165,11 @@ The experiment unit is one complete dataset run. Each run owns its GPU index ins
 
 ## Requests, failures, and recovery
 
-Each generation attempt has a 60-second total deadline, including connection, provider queueing, prefill, and generation. Model loading and retrieval are outside that request deadline. Retryable transport errors, rate limits, temporary server failures, and timeouts allow up to three additional attempts (four total), with a fixed 5-second wait. Actual wait is measured and excluded from question latency; request time remains included. Transport automatic retries are disabled.
+Each generation attempt has a 60-second total deadline, including connection, provider queueing, prefill, and generation. Local Transformers stopping is cooperative: an in-flight prefill or first-use Triton JIT compilation can delay exit beyond 60 seconds. The runner waits for the GPU worker to finish before retrying. Model loading and retrieval are outside that request deadline. Retryable transport errors, rate limits, temporary server failures, and timeouts allow up to three additional attempts (four total), with a fixed 5-second wait. Actual wait is measured and excluded from question latency; request time remains included. Transport automatic retries are disabled.
 
 Invalid JSON, output truncation, or invisible/invalid citations do not trigger answer repair or regeneration. A failed prediction has a legal ranking and empty answer/citation arrays. Structurally valid citations are checked against the published Gold set as a diagnostic; the runner never reads gold to decide whether to retry. The current Gold lists do not define complete proof combinations, so Grounded EM and Sufficiency are not computed.
 
-The journal records requests before sending and final content/usage after return. Each completed question is committed durably before the recoverable prediction/trace views are appended. `--resume` requires identical effective configuration, prompt assets, index metadata, seed, and question order. Runs from the previous model or configuration format require a new run directory; do not resume them under the unified configuration. All committed terminal questions, including failures, are skipped. Each run directory has an exclusive writer lock.
+The journal records requests before sending and final content/usage after return. Each completed question is committed durably before the recoverable prediction/trace views are appended. `--resume` requires identical effective configuration, prompt assets, index metadata, seed, and question order. Local generation also requires matching FLA/Triton versions and bound implementations; a run started before FLA identity was recorded needs a new run directory. Runs from the previous model or configuration format require a new run directory; do not resume them under the unified configuration. All committed terminal questions, including failures, are skipped. Each run directory has an exclusive writer lock.
 
 A crash after remote execution but before persistence cannot guarantee exactly-once billing or execution. Preserve interrupted attempts and unknown usage. Unobserved elapsed time across an interruption makes `active_seconds=null`, with known subtotals retained; downtime is not treated as query time or guessed away.
 
