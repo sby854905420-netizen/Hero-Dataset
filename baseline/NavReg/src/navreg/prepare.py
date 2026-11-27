@@ -1,6 +1,7 @@
 """Serialize complete public corpus records without reading QA or gold labels."""
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from itertools import islice
 import json
 from pathlib import Path
 import re
@@ -11,7 +12,7 @@ from .serialization.kg import serialize_kg
 from .serialization.table import serialize_table
 from .serialization.infobox import serialize_infobox
 
-SERIALIZATION_VERSION = 'navreg-fixed-serialization-v1'
+SERIALIZATION_VERSION = 'navreg-fixed-serialization-v2'
 CORPUS_FILES = (
     ('kb', 'data_repository/kg/kb.jsonl', 'record_uid'),
     ('table', 'data_repository/tables/tables.jsonl', 'evidence_id'),
@@ -20,10 +21,10 @@ CORPUS_FILES = (
 RENDERERS = {'kb': serialize_kg, 'table': serialize_table, 'info': serialize_infobox}
 
 
-def load_sources(data_root):
+def iter_sources(data_root):
     """Only these three complete corpus files are inputs; QA is never opened."""
     data_root = Path(data_root).resolve()
-    sources, seen = [], set()
+    seen = set()
     for source, relative, id_field in CORPUS_FILES:
         count = 0
         with (data_root / relative).open(encoding='utf-8') as stream:
@@ -44,15 +45,19 @@ def load_sources(data_root):
                 seen.add(rid)
                 record = {'record_id': rid, 'source': source, 'source_path': relative,
                           'line_number': line_number}
-                sources.append((record, parent))
+                yield record, parent
                 count += 1
         if not count:
             raise ValueError('empty corpus file: ' + relative)
-    return sources
+
+
+def load_sources(data_root):
+    """Return the complete source list for existing small-corpus callers."""
+    return list(iter_sources(data_root))
 
 
 def build_labels(sources):
-    """Use existing source names; the two fixed additions name measurement units."""
+    """Read names from a reusable iterable or a factory providing fresh iterators."""
     labels = {'entities': {}, 'properties': {}}
 
     def remember(bucket, identifier, label):
@@ -72,7 +77,7 @@ def build_labels(sources):
                     links(value[key])
 
     # Registry order is stable; KG names take precedence over link titles.
-    for record, parent in sources:
+    for record, parent in sources() if callable(sources) else sources:
         if record['source'] != 'kb':
             continue
         for target in parent.get('targets', [parent]):
@@ -81,7 +86,7 @@ def build_labels(sources):
             value = target.get('value', {})
             if value.get('type') == 'entity':
                 remember('entities', value.get('id') or value.get('qid'), value.get('label'))
-    for record, parent in sources:
+    for record, parent in sources() if callable(sources) else sources:
         if record['source'] != 'kb':
             links(parent)
     labels['entities'].setdefault('Q4917', 'United States dollar')
@@ -132,6 +137,9 @@ def validate_document(document, record, parent):
                 expected_id = rid + '#field=' + quote(field, safe='') + '&occurrence=' + str(occurrence)
                 expected_selector = {'unit': 'infobox_field', 'field': field,
                                      'field_occurrence': occurrence, 'row_index': row_index}
+            elif original['row_type'] == 'image_caption':
+                expected_id = rid + '#row=' + str(index)
+                expected_selector = {'unit': 'infobox_row', 'row_index': index}
             else:
                 expected_id = rid + '#context-row=' + str(row_index)
                 expected_selector = None
@@ -158,19 +166,20 @@ def serialize_repository(data_root, output_dir, workers=4):
     output = Path(output_dir).resolve()
     if output.exists():
         raise ValueError('output already exists; choose a new output directory')
-    sources = load_sources(data_root)
-    labels = build_labels(sources)
+    labels = build_labels(lambda: iter_sources(data_root))
     output.parent.mkdir(parents=True, exist_ok=True)
     record_counts, unit_counts = Counter(), Counter()
     with tempfile.TemporaryDirectory(prefix='.' + output.name + '-build-', dir=output.parent) as tmp:
         staging = Path(tmp) / 'result'
         staging.mkdir()
         with ThreadPoolExecutor(max_workers=workers) as executor, (staging / 'records.jsonl').open('w', encoding='utf-8', newline='\n') as stream:
-            # map keeps corpus file/line order independent of worker scheduling.
-            for document in executor.map(lambda source: render_source(source, labels), sources):
-                record_counts[document['source_type']] += 1
-                unit_counts[document['source_type']] += len(document['units'])
-                stream.write(json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\n')
+            # Bound queued full records; map preserves corpus file/line order.
+            sources = iter_sources(data_root)
+            while batch := list(islice(sources, 32)):
+                for document in executor.map(lambda source: render_source(source, labels), batch):
+                    record_counts[document['source_type']] += 1
+                    unit_counts[document['source_type']] += len(document['units'])
+                    stream.write(json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(',', ':')) + '\n')
         summary = {
             'serialization_version': SERIALIZATION_VERSION,
             'source_records': sum(record_counts.values()),

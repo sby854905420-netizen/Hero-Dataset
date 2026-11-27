@@ -1,5 +1,5 @@
 Determine whether the two items express the same answer under the question's required identity, scope, units, and precision.
-Accept wording or formatting differences that preserve meaning. Reject related but different entities, partial answers, incorrect qualifications, and multiple candidates combined into one item.
+Accept wording or formatting differences that preserve meaning. Reject related but different entities, missing required components, incorrect qualifications, and extra competing candidates. When the supplied gold item contains several required components, assess them together as that single item.
 Do not answer the question anew, add gold answers, or use external knowledge to complete missing information. Return uncertain when the supplied material is insufficient.
 The input contains the question, answer-type and precision rules, normalized prediction, one specific gold answer item, and registered aliases. It contains no method name, efficiency data, or other systems' answers.
 Output only JSON: {"decision":"equivalent|different|uncertain","reason":"a short explanation"}.

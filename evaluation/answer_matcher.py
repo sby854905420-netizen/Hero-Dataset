@@ -1,6 +1,6 @@
 """Deterministic answer matching; unresolved semantics require a cached adjudication.
 
-Policies register each question's distinct gold items. This module never invents
+Runtime policies register gold items from QA. This module never invents
 aliases, infers entity subclasses, or calls an external judge.
 """
 
@@ -149,6 +149,7 @@ def normalize_prediction(answer, policy):
     alias_matches = [gid for gid, item in items.items()
                      if text in {normalize_text(a) for a in item.get("aliases", [item["label"]])}]
     id_matches = [gid for gid, item in items.items() if cid and cid == item.get("canonical_id")]
+    value_text = text.rstrip(".")
     if kind in ("entity", "string"):
         if cid and len(alias_matches) == 1:
             alias_id = items[alias_matches[0]].get("canonical_id")
@@ -159,31 +160,34 @@ def normalize_prediction(answer, policy):
             result["resolved_gold_item_id"] = resolved[0]
         result["value"] = cid or (resolved[0] if len(resolved) == 1 else None)
     elif kind in ("date", "year"):
-        parsed = _date(text)
+        parsed = _date(value_text)
         if parsed:
             value, precision = parsed
             result["value"] = value[:4] if kind == "year" else value
             result["precision"] = "year" if kind == "year" else precision
     elif kind == "number":
         for unit in policy.get("count_units", []):
-            if text.endswith(" " + unit):
-                text = text[:-len(unit)].strip()
+            if value_text.endswith(" " + unit):
+                value_text = value_text[:-len(unit)].strip()
                 break
-        value = _decimal(text)
+        value = _decimal(value_text)
         if value is not None:
             result["value"] = _number_string(value)
     elif kind == "boolean":
-        if text in ("yes", "true", "no", "false"):
-            result["value"] = text in ("yes", "true")
+        if value_text in ("yes", "true", "no", "false"):
+            result["value"] = value_text in ("yes", "true")
     elif kind == "quantity":
-        result["value"], result["qualifier"] = _quantity(text, policy)
+        result["value"], result["qualifier"] = _quantity(value_text, policy)
     elif kind == "ratio":
-        match = re.fullmatch(rf"(?:w\s*:\s*h\s*=\s*)?({_NUMBER})(?:\s*[:/]\s*({_NUMBER}))?", text)
+        match = re.fullmatch(rf"(?:w\s*:\s*h\s*=\s*)?({_NUMBER})(?:\s*[:/]\s*({_NUMBER}))?", value_text)
         if match:
             numerator, denominator = _decimal(match[1]), _decimal(match[2] or "1")
             if numerator is not None and denominator is not None and denominator and numerator > 0 and denominator > 0:
                 value = Fraction(numerator) / Fraction(denominator)
                 result["value"] = f"{value.numerator}/{value.denominator}"
+    # An exact QA label or explicit alias remains valid for structured answers too.
+    if kind not in ("entity", "string") and not cid and len(alias_matches) == 1:
+        result["resolved_gold_item_id"] = alias_matches[0]
     key = [kind, result["value"], result.get("qualifier")]
     if result["resolved_gold_item_id"]:
         key = [kind, "gold", result["resolved_gold_item_id"]]

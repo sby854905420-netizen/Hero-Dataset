@@ -10,7 +10,7 @@ import time
 import uuid
 
 from .config import read_jsonl, write_json, require_path
-from .context import build_context, parse_answer
+from .context import SerializedRecords, build_context, parse_answer
 from .generation import build_messages, make_generator, GenerationError, unknown_usage
 from .retrieval import retrieve
 
@@ -200,7 +200,7 @@ async def run_experiment(config, directory=None, index_dir=None, serialized_dir=
         raise ValueError('--limit requires --debug and a positive sample count')
     data = require_path(config, 'data_root')
     # No answer or annotation object crosses the method boundary.
-    questions = {row['question_id']: row['question'] for row in read_jsonl(data / 'qa/qa_pairs.jsonl')}
+    questions = {row['question_id']: row['question'] for row in read_jsonl(data / 'qa_pairs.jsonl')}
     if len(questions) != 500:
         raise ValueError('expected 500 QA questions')
     order = sorted(questions)
@@ -241,7 +241,7 @@ async def run_experiment(config, directory=None, index_dir=None, serialized_dir=
         done = {e['question_id'] for e in journal.events if e['event'] == 'committed'}
         if len(done) < len(order):
             loaded_at = time.perf_counter()
-            documents = {d['source_record_id']: d for d in read_jsonl(source / 'records.jsonl')}
+            documents = SerializedRecords(source / 'records.jsonl')
             embedder = Embedder(config['embedding'], config['paths'].get('model_cache'))
             index = Index(bundle, config)
             generator = make_generator(config)

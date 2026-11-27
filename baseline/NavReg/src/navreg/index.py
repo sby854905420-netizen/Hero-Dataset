@@ -20,7 +20,6 @@ def build_index(config, output_dir=None, serialized_dir=None):
     source = Path(serialized_dir) if serialized_dir else require_path(config, 'serialized_root') / config['serialization']['version']
     if not source.exists():
         serialize_repository(require_path(config, 'data_root'), source)
-    documents = read_jsonl(source / 'records.jsonl')
     encoder = Embedder(config['embedding'], config['paths'].get('model_cache'))
     target.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=target.name + '.building-', dir=target.parent))
@@ -29,9 +28,16 @@ def build_index(config, output_dir=None, serialized_dir=None):
         resources.setTempMemory(GPU_TEMP_MEMORY_MIB * 1024 ** 2)
         cpu = faiss.IndexFlatIP(config['embedding']['dimensions'])
         gpu = faiss.index_cpu_to_gpu(resources, 0, cpu)
-        count = 0
+        count, parent_count = 0, 0
         batch = []
-        with (stage / 'chunk_map.jsonl').open('w', encoding='utf-8') as mapping:
+        with (source / 'records.jsonl').open(encoding='utf-8') as records, (stage / 'chunk_map.jsonl').open('w', encoding='utf-8') as mapping:
+            def documents():
+                nonlocal parent_count
+                for line in records:
+                    if line.strip():
+                        parent_count += 1
+                        yield json.loads(line)
+
             def add():
                 nonlocal count
                 gpu.add(encoder.encode([item['text'] for item in batch]))
@@ -39,7 +45,7 @@ def build_index(config, output_dir=None, serialized_dir=None):
                     mapping.write(json.dumps({'vector_index': count, **item}, ensure_ascii=False) + '\n')
                     count += 1
                 batch.clear()
-            for item in chunk_documents(documents, encoder.tokenizer, config['embedding']['max_input_tokens'], config['chunking']['cell_value_max_tokens']):
+            for item in chunk_documents(documents(), encoder.tokenizer, config['embedding']['max_input_tokens'], config['chunking']['cell_value_max_tokens']):
                 batch.append(item)
                 if len(batch) >= encoder.batch_size:
                     add()
@@ -49,11 +55,11 @@ def build_index(config, output_dir=None, serialized_dir=None):
             raise ValueError('no indexable chunks')
         faiss.write_index(faiss.index_gpu_to_cpu(gpu), str(stage / 'index.faiss'))
         manifest = {'bundle_version': 'navreg-index-v1', 'settings': index_settings(config),
-                    'vector_count': count, 'parent_count': len(documents),
+                    'vector_count': count, 'parent_count': parent_count,
                     'serialized_dir': str(source.resolve()), 'data_root': str(require_path(config, 'data_root'))}
         write_json(stage / 'manifest.json', manifest)
         stage.rename(target)
-        return {'index_dir': str(target), 'vector_count': count, 'parent_count': len(documents)}
+        return {'index_dir': str(target), 'vector_count': count, 'parent_count': parent_count}
     finally:
         if stage.exists():
             shutil.rmtree(stage)

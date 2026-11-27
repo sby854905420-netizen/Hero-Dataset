@@ -1,5 +1,5 @@
 {
-  "judge_version": "hero-answer-equivalence-gpt-6-luna-v2-en",
+  "judge_version": "hero-answer-equivalence-gpt-6-luna-v3-en",
   "model_snapshot": "gpt-6-luna",
   "snapshot_kind": "provider_alias_no_immutable_snapshot_published",
   "parameters": {},

@@ -1,5 +1,6 @@
-"""Score the six Hero Dataset quality metrics against the final, repaired gold."""
+"""Score retrieval hits and answers against the public QA and gold references."""
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -10,10 +11,12 @@ from answer_matcher import normalize_prediction, pair_decision
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DEFAULT_DATA = ROOT / 'Data'
-GOLD_VERSION = 'quality-readiness-audit-v1'
-VERSION = 'hero-quality-scorer-v4'
-METRICS = ('Sufficiency@5', 'Sufficiency@10', 'MRR@100', 'Hit@5', 'Hit@10',
-           'Answer Set F1', 'Answer Set EM', 'Grounded EM')
+GOLD_VERSION = 'human-curated-final500-2026-11-25'
+VERSION = 'hero-quality-scorer-v5'
+METRICS = ('MRR@100', 'Hit@5', 'Hit@10', 'Answer Set F1', 'Answer Set EM')
+UNAVAILABLE_METRICS = dict.fromkeys(
+    ('Sufficiency@5', 'Sufficiency@10', 'Grounded EM'),
+    'Not reported: the public gold references do not specify sufficient AND/OR proof combinations.')
 
 
 def read_json(path):
@@ -21,7 +24,8 @@ def read_json(path):
 
 
 def read_jsonl(path):
-    return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    with path.open(encoding='utf-8') as stream:
+        return [json.loads(line) for line in stream if line.strip()]
 
 
 def canonical(value):
@@ -90,24 +94,57 @@ def resolve_citation(citation, records):
             raise ValueError('row_index conflicts with InfoBox field occurrence')
         # A JSON key avoids ambiguity from punctuation in field names.
         return canonical([rid, field, occurrence])
+    if source == 'info' and unit == 'infobox_row':
+        if set(selector) != {'unit', 'row_index'}:
+            raise ValueError('InfoBox row requires only unit and row_index')
+        index = selector['row_index']
+        if not nonnegative_index(index) or index >= len(parent['rows']):
+            raise ValueError('row_index outside InfoBox')
+        row = parent['rows'][index]
+        if row.get('row_type') != 'image_caption' or row.get('field'):
+            raise ValueError('infobox_row must select an image caption without a field')
+        return rid + '#row=' + str(index)
     raise ValueError('selector unit does not match the source type')
 
 
-def supports_all(gold, refs):
-    covered = set()
-    for branch in gold['proof_branches']:
-        if all(any(all(ref in refs for ref in option) for option in step['or_options'])
-               for step in branch['steps']):
-            covered.update(branch['answer_indices'])
-    return covered == set(range(len(gold['answer_items'])))
+def answer_policy(qid, answers, overrides):
+    """Build answer identities from QA; the configuration contains matching rules only."""
+    allowed = {'type', 'precision', 'count_units', 'unit', 'qualifiers',
+               'absolute_tolerance', 'relative_tolerance', 'aliases'}
+    if not isinstance(overrides, dict) or set(overrides) - allowed:
+        raise ValueError('answer policy contains unknown or duplicated QA fields: ' + qid)
+    policy = {'type': 'entity', **overrides}
+    if policy['type'] not in {'entity', 'string', 'number', 'year', 'date', 'boolean', 'quantity', 'ratio'}:
+        raise ValueError('unknown answer type: ' + qid)
+    if not isinstance(answers, list) or not answers:
+        raise ValueError('QA answers must be a nonempty array: ' + qid)
+    aliases = policy.pop('aliases', {})
+    if not isinstance(aliases, dict) or set(aliases) - {str(i) for i in range(len(answers))}:
+        raise ValueError('answer aliases refer to an unknown QA answer: ' + qid)
+    items = []
+    for index, answer in enumerate(answers):
+        if (not isinstance(answer, dict) or set(answer) != {'id', 'label'} or
+                not all(isinstance(v, str) for v in answer.values()) or not answer['label'].strip()):
+            raise ValueError('QA answers require string id and nonempty label: ' + qid)
+        item = {'gold_item_id': qid + '::answer::' + str(index),
+                'canonical_id': answer['id'] if re.fullmatch(r'Q[1-9]\d*', answer['id']) else None,
+                'label': answer['label']}
+        extra = aliases.get(str(index), [])
+        if not isinstance(extra, list) or any(not isinstance(a, str) or not a.strip() for a in extra):
+            raise ValueError('answer aliases must be nonempty strings: ' + qid)
+        items.append(item)
+        policy.setdefault('gold_items', {})[item['gold_item_id']] = {
+            'canonical_id': item['canonical_id'], 'label': item['label'],
+            'aliases': list(dict.fromkeys([item['label'], *extra]))}
+    return policy, items
 
 
 def load_assets(data_dir=DEFAULT_DATA, policies_path=HERE / 'answer_policies.json',
                 judge_path=HERE / 'judge_config.json'):
     """Load the self-contained published QA, complete corpus and scoring gold."""
     data_dir = Path(data_dir).resolve()
-    annotations_path = data_dir / 'annotations/evaluation_annotations.jsonl'
-    qa_path = data_dir / 'qa/qa_pairs.jsonl'
+    annotations_path = data_dir / 'gold_annotations.jsonl'
+    qa_path = data_dir / 'qa_pairs.jsonl'
     rows = read_jsonl(annotations_path)
     gold = {row['question_id']: row for row in rows}
     if len(gold) != len(rows) or len(gold) != 500:
@@ -117,18 +154,19 @@ def load_assets(data_dir=DEFAULT_DATA, policies_path=HERE / 'answer_policies.jso
     if len(samples) != len(qa_rows) or any(not isinstance(qid, str) for qid in samples):
         raise ValueError('QA requires unique string question IDs')
     policy_document = read_json(Path(policies_path))
-    policies = policy_document['questions']
-    if set(policies) != set(gold) or set(samples) != set(gold):
-        raise ValueError('answer policies, questions and annotations must cover the same 500 IDs')
+    overrides = policy_document['questions']
+    if set(overrides) - set(samples) or set(samples) != set(gold):
+        raise ValueError('QA and gold must cover the same 500 IDs; policies may only name those IDs')
+    policies = {}
     records = {}
-    for source, relative, id_key, expected in (
-            ('kb', 'data_repository/kg/kb.jsonl', 'record_uid', 747),
-            ('table', 'data_repository/tables/tables.jsonl', 'evidence_id', 528),
-            ('info', 'data_repository/infoboxes/infoboxes.jsonl', 'evidence_id', 358)):
+    for source, relative, id_key in (
+            ('kb', 'data_repository/kg/kb.jsonl', 'record_uid'),
+            ('table', 'data_repository/tables/tables.jsonl', 'evidence_id'),
+            ('info', 'data_repository/infoboxes/infoboxes.jsonl', 'evidence_id')):
         path = data_dir / relative
         parents = read_jsonl(path)
-        if len(parents) != expected:
-            raise ValueError(f'expected {expected} complete {source} source records')
+        if not parents:
+            raise ValueError('empty complete corpus file: ' + relative)
         for parent in parents:
             rid = parent[id_key]
             if not isinstance(rid, str) or rid in records:
@@ -136,43 +174,31 @@ def load_assets(data_dir=DEFAULT_DATA, policies_path=HERE / 'answer_policies.jso
             records[rid] = (source, parent)
     citation_maps = {}
     for qid, row in gold.items():
-        if samples[qid]['answers'] != row['answers']:
-            raise ValueError('QA and annotations disagree on standard answers: ' + qid)
+        if (set(row) != {'question_id', 'evidence'} or
+                not isinstance(row['evidence'], list) or not row['evidence']):
+            raise ValueError('gold annotations require question_id and nonempty evidence: ' + qid)
+        sample = samples[qid]
+        if not isinstance(sample.get('question'), str) or not sample['question'].strip() or not sample.get('answers'):
+            raise ValueError('QA requires a question and nonempty answers: ' + qid)
+        policies[qid], items = answer_policy(qid, sample['answers'], overrides.get(qid, {}))
         mapping, refs = {}, set()
         for evidence in row['evidence']:
+            if (not isinstance(evidence, dict) or set(evidence) != {'ref', 'source_record_id', 'selector'} or
+                    not isinstance(evidence['ref'], str) or not evidence['ref'] or evidence['ref'] in refs):
+                raise ValueError('invalid or duplicated gold evidence: ' + qid)
             key = resolve_citation({k: evidence[k] for k in ('source_record_id', 'selector')}, records)
             mapping.setdefault(key, set()).add(evidence['ref'])
             refs.add(evidence['ref'])
         citation_maps[qid] = mapping
-        item_ids = [answer['gold_item_id'] for answer in row['answer_items']]
-        if not item_ids or len(set(item_ids)) != len(item_ids):
-            raise ValueError('gold answers require distinct stable item IDs: ' + qid)
-        registered = policies[qid].get('gold_items', {})
-        if set(registered) != set(item_ids) or policies[qid].get('question') != samples[qid]['question']:
-            raise ValueError('answer policy belongs to different gold: ' + qid)
-        for item in row['answer_items']:
-            entry = registered[item['gold_item_id']]
-            if any(entry.get(k) != item.get(k) for k in ('canonical_id', 'label')):
-                raise ValueError('answer policy changes a gold answer: ' + qid)
-        if set(row['relevant_record_ids']) != {e['source_record_id'] for e in row['evidence']
-                                              if e['retrieval_relevant']}:
-            raise ValueError('inconsistent retrieval relevance: ' + qid)
-        for branch in row['proof_branches']:
-            if not branch['answer_indices'] or not branch['steps']:
-                raise ValueError('empty gold proof branch: ' + qid)
-            if any(type(i) is not int or not 0 <= i < len(item_ids) for i in branch['answer_indices']):
-                raise ValueError('gold answer index out of range: ' + qid)
-            for step in branch['steps']:
-                if not step['or_options'] or any(not option or not set(option) <= refs
-                                                for option in step['or_options']):
-                    raise ValueError('gold proof references missing evidence: ' + qid)
-        if not supports_all(row, refs):
-            raise ValueError('gold cannot prove every answer: ' + qid)
+        row['answer_items'] = items
+        row['relevant_record_ids'] = sorted({e['source_record_id'] for e in row['evidence']})
     judge = read_json(Path(judge_path))
     prompt_path = HERE / 'judge_prompt.txt'
     context = {
         'evaluator_version': VERSION, 'gold_version': GOLD_VERSION,
         'answer_policy_version': policy_document['version'],
+        'data_fingerprint': hashlib.sha256(qa_path.read_bytes() + annotations_path.read_bytes()
+                                           + Path(policies_path).read_bytes()).hexdigest(),
         'judge_prompt': prompt_path.read_text(encoding='utf-8'),
         'judge_config': judge,
     }
@@ -326,8 +352,6 @@ def evaluate(submissions, assets, judgments=None):
             positives = set(gold['relevant_record_ids'])
             for k in (5, 10):
                 selected_records = set(ranking[:k])
-                refs = {e['ref'] for e in gold['evidence'] if e['source_record_id'] in selected_records}
-                result['Sufficiency@' + str(k)] = int(supports_all(gold, refs))
                 result['Hit@' + str(k)] = int(bool(selected_records & positives))
             result['MRR@100'] = next((1 / i for i, rid in enumerate(ranking[:100], start=1)
                                      if rid in positives), 0)
@@ -336,11 +360,7 @@ def evaluate(submissions, assets, judgments=None):
             pending.extend(unresolved)
             selected_keys = {resolve_citation(c, assets['records'])
                              for c in row.get('citations', [])}
-            refs = set().union(*(assets['citation_maps'][qid].get(key, set()) for key in selected_keys))
-            result['citations_sufficient'] = supports_all(gold, refs)
             result['unconfirmed_citation_keys'] = sorted(selected_keys - set(assets['citation_maps'][qid]))
-            em = result['Answer Set EM']
-            result['Grounded EM'] = None if em is None else int(em and result['citations_sufficient'])
         results.append(result)
     metrics = {}
     for name in METRICS:
@@ -351,6 +371,7 @@ def evaluate(submissions, assets, judgments=None):
                'missing_questions': sum(row['status'] == 'missing' for row in results),
                'unsuccessful_questions': sum(row['status'] in {'failed', 'timeout', 'refused'} for row in results),
                'pending_answer_pairs': len(pending), 'unit': 'percent', 'metrics': metrics,
+               'supported_metrics': list(METRICS), 'unavailable_metrics': UNAVAILABLE_METRICS,
                'gold_version': assets['context']['gold_version'], 'evaluator_version': VERSION,
                'scope': 'Fixed confirmed gold; unregistered valid evidence requires versioned review.',
                'efficiency': 'Not computed here; record actual baseline request and wall-clock logs separately.'}

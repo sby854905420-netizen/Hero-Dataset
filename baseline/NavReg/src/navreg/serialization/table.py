@@ -34,9 +34,11 @@ def serialize_table(source_record_id, parent):
     if not isinstance(parent, dict):
         raise ValueError('table parent must be an object')
     header, rows = parent.get('header'), parent.get('rows')
-    if not isinstance(header, list) or not header or any(not isinstance(layer, list) for layer in header):
-        raise ValueError('header must contain at least one header row')
-    width = len(header[0])
+    if not isinstance(header, list) or any(not isinstance(layer, list) for layer in header):
+        raise ValueError('header must be an array of header rows')
+    if not isinstance(rows, list) or any(not isinstance(row, list) for row in rows):
+        raise ValueError('data rows must be arrays')
+    width = len(header[0]) if header else (len(rows[0]) if rows else 0)
     if not width or any(len(layer) != width for layer in header):
         raise ValueError('header rows must have the same nonzero width')
     if any(not isinstance(value, str) for layer in header for value in layer):
@@ -56,6 +58,8 @@ def serialize_table(source_record_id, parent):
         labels.append(label)
     context = ['Type: Table', 'Page: ' + _markdown(parent.get('page_title', '')),
                'Section: ' + ' > '.join(_markdown(section) for section in sections)]
+    if not header:
+        context.append('Headers: not supplied in source; Cn labels are column coordinates only')
     if 'caption' in parent:
         context.append('Caption: ' + _markdown(parent['caption']))
     context.extend(['', '| ' + ' | '.join(labels) + ' |',

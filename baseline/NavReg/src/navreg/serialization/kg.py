@@ -1,5 +1,6 @@
 """Deterministic KG statement text and selectors, using only the supplied record."""
 import copy
+from collections import ChainMap
 import json
 import re
 
@@ -15,8 +16,15 @@ def _value_text(value, labels):
         return _name(value.get('qid') or value['id'], value.get('label'), labels['entities'])
     if kind == 'string':
         return json.dumps(value['text'], ensure_ascii=False)
+    if kind == 'monolingualtext':
+        return json.dumps(value['text'], ensure_ascii=False) + ' (language=' + value['language'] + ')'
     if kind == 'novalue':
         return 'no value'
+    if kind == 'somevalue':
+        return 'unknown value'
+    if kind == 'globecoordinate':
+        return 'coordinates ' + json.dumps({key: val for key, val in value.items() if key != 'type'},
+                                           ensure_ascii=False, sort_keys=True)
     if kind == 'time':
         match = re.fullmatch(r'([+-]?\d+)-(\d{2})-(\d{2})(?:T.*)?', value['time'])
         if not match:
@@ -24,26 +32,43 @@ def _value_text(value, labels):
         year, month, day = match.groups()
         year = year.lstrip('+')
         precision = value['precision']
-        if precision == 9:
-            return year
-        if precision == 10:
-            return f'{year}-{month}'
-        if precision == 11:
-            return f'{year}-{month}-{day}'
-        raise ValueError('Unsupported KG time precision: ' + str(precision))
+        if type(precision) is not int or not 0 <= precision <= 11:
+            raise ValueError('Unsupported KG time precision: ' + str(precision))
+        if precision < 9:
+            units = ('billion years', 'hundred million years', 'ten million years', 'million years',
+                     'hundred thousand years', 'ten thousand years', 'millennium', 'century', 'decade')
+            # A coarse timestamp is not an exact year or an inferred calendar interval.
+            text = f'{value["time"]} (precision={precision}: {units[precision]})'
+        elif precision == 9:
+            text = year
+        elif precision == 10:
+            text = f'{year}-{month}'
+        else:
+            text = f'{year}-{month}-{day}'
+        details = []
+        calendar = value.get('calendar') or value.get('calendarmodel')
+        if calendar and calendar.rsplit('/', 1)[-1] != 'Q1985727':
+            details.append('calendar=' + calendar)
+        for key in ('timezone', 'before', 'after'):
+            if value.get(key):
+                details.append(f'{key}={value[key]}')
+        return text + (' [' + '; '.join(details) + ']' if details else '')
     if kind == 'quantity':
         text = value['amount']
         unit = value['unit']
         if unit != '1':
             unit_id = unit.rsplit('/', 1)[-1]
             text += ' ' + _name(unit_id, None, labels['entities'])
+        bounds = [f'{key}={value[key]}' for key in ('lowerBound', 'upperBound') if key in value]
+        if bounds:
+            text += ' [' + '; '.join(bounds) + ']'
         return text
     raise ValueError('Unsupported KG value type: ' + str(kind))
 
 
 def _snak_value(snak, entity_names):
-    if snak['snaktype'] == 'novalue':
-        return {'type': 'novalue'}
+    if snak['snaktype'] in ('novalue', 'somevalue'):
+        return {'type': snak['snaktype']}
     if snak['snaktype'] != 'value':
         raise ValueError('Unsupported KG qualifier snaktype: ' + str(snak['snaktype']))
     data = snak['datavalue']
@@ -63,6 +88,8 @@ def _snak_value(snak, entity_names):
         return {'type': 'quantity', **copy.deepcopy(value)}
     if data['type'] == 'string':
         return {'type': 'string', 'text': value}
+    if data['type'] in ('monolingualtext', 'globecoordinate'):
+        return {'type': data['type'], **copy.deepcopy(value)}
     raise ValueError('Unsupported KG qualifier datavalue: ' + str(data['type']))
 
 
@@ -73,8 +100,8 @@ def _qualifiers(target, labels):
         return qualifiers, {}, list(dict.fromkeys(item['pid'] for item in qualifiers))
     raw = statement['qualifiers']
     order = statement.get('qualifiers-order', list(raw))
-    properties = dict(labels['properties'])
-    entities = dict(labels['entities'])
+    properties = ChainMap({}, labels['properties'])
+    entities = ChainMap({}, labels['entities'])
     # The normalized copy supplies names only; raw snaks determine every value.
     for item in target.get('qualifiers', []):
         if item.get('label'):

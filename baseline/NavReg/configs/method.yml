@@ -4,7 +4,7 @@ method: Naive RAG
 status: first_implementation
 
 serialization:
-  version: navreg-fixed-serialization-v1
+  version: navreg-fixed-serialization-v2
   kg: subject_relation_value_qualifiers_rank
   table: markdown_with_page_section_headers_and_original_row_coordinates
   infobox: page_section_and_field_value_pairs

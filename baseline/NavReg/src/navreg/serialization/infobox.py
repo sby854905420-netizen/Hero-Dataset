@@ -43,7 +43,7 @@ def serialize_infobox(source_record_id, parent):
     units = []
     occurrences = Counter()
     seen_rows = set()
-    for row in parent["rows"]:
+    for position, row in enumerate(parent["rows"]):
         index = row["row_idx"]
         if isinstance(index, bool) or not isinstance(index, int) or index < 0 or index in seen_rows:
             raise ValueError("row_idx must be a unique nonnegative integer")
@@ -58,6 +58,9 @@ def serialize_infobox(source_record_id, parent):
             unit_id = source_record_id + "#field=" + quote(field, safe="") + "&occurrence=" + str(occurrence)
             selector = {"unit": "infobox_field", "field": field,
                         "field_occurrence": occurrence, "row_index": index}
+        elif row["row_type"] == "image_caption":
+            unit_id = source_record_id + "#row=" + str(position)
+            selector = {"unit": "infobox_row", "row_index": position}
         else:
             unit_id = source_record_id + "#context-row=" + str(index)
             selector = None
