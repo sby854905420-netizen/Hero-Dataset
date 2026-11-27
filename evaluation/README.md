@@ -1,6 +1,6 @@
 # Hero Dataset evaluation
 
-The evaluator scores six quality metric families against the final `Data/` release: 500 questions, 645 gold answer items, and 1,633 complete sources (747 KG records, 528 tables, and 358 infoboxes). It reads QA, complete corpus records, and evidence annotations directly, without old archives or byte-offset indexes.
+The evaluator scores five quality columns against version 2.0.0: 500 questions, 665 gold answer items, and 184,856 complete sources (145,115 KG records, 17,821 tables, and 21,920 infoboxes). It reads `Data/qa_pairs.jsonl`, `Data/gold_annotations.jsonl`, and the complete corpus. Download and extract the [full corpus Release asset](../Data/data_repository/README.md) before evaluation.
 
 ## Commands
 
@@ -33,7 +33,7 @@ JSONL contains one question per line and only the following five fields. `questi
 
 - `retrieved_record_ids`: up to 100 unique complete source IDs, in ranked order. Use KG `record_uid` and table/infobox `evidence_id`, retaining suffixes such as `@occ`. Invalid IDs or duplicate ranks reject the submission; ranks are not repaired or shifted.
 - `answers`: independent answer items, as strings or objects using `canonical_id`, `id`, `label`, and/or `text`. An entity `canonical_id` must be a Wikidata QID. Final response text and telemetry belong in separate logs, without reasoning text.
-- `citations`: fine-grained references, with no count limit. Repeated references represent the same unit and do not add support. Each citation must have a valid source and selector. Citations need not occur in the retrieval ranking; retrieval and citation quality are scored independently.
+- `citations`: fine-grained references, with no count limit. Each citation must have a valid source and selector. Citations need not occur in the retrieval ranking. Their structure and membership in the registered Gold set are checked as diagnostics; this release does not assign a proof-sufficiency score.
 - `status`: `completed`, `failed`, `timeout`, or `refused`. Failed, timed-out, refused, and missing questions receive zero on every quality metric. The full denominator remains 500.
 
 Failures must still be structurally valid:
@@ -54,25 +54,24 @@ Positions are zero-based. Structure is validated against the public corpus witho
 | Table | `{"unit":"table_row","row_index":2}` | One data row |
 | Table | `{"unit":"whole_table"}` | The complete table |
 | Infobox | `{"unit":"infobox_field","field":"Language","field_occurrence":0}` | One occurrence of a field; optional `row_index` must agree |
+| Infobox | `{"unit":"infobox_row","row_index":0}` | One image-caption row, indexed by position in the stored `rows` array |
 
 Every corpus table admits a structurally valid whole-table citation; the method does not need gold to create it. However, a method may return it only when the full table was actually visible. The prediction file cannot prove visibility, so methods must retain visible context in their traces.
 
-Legal references not registered for that question appear in `unconfirmed_citation_keys`. They do not support the current proof and incur no separate extra-citation penalty. Row, whole-table, and infobox-field references do not automatically substitute for each other. Newly discovered valid proofs require consistent gold/evaluator version review.
+Legal references not registered as Gold for that question appear in `unconfirmed_citation_keys`. They incur no separate extra-citation penalty and are not automatically judged false. Row, whole-table, field, and caption references remain distinct. New supporting evidence requires review before being added to the official Gold set.
 
-## Six quality metric families
-
-A proof branch supports its listed answer items when every step has at least one complete alternative support combination. All references inside a combination are jointly required. Satisfied branches together must cover every gold answer item.
+## Supported quality metrics
 
 | Family | Output columns | Per-question definition |
 | --- | --- | --- |
-| Sufficiency | `Sufficiency@5`, `Sufficiency@10` | 1 if the top K complete sources contain confirmed evidence sufficient to prove every answer; otherwise 0 |
-| Hit | `Hit@5`, `Hit@10` | 1 if the top K sources contain at least one confirmed relevant source; otherwise 0 |
-| MRR | `MRR@100` | Reciprocal rank of the first relevant source within 100; 0 if absent |
+| Hit | `Hit@5`, `Hit@10` | 1 if the top K sources contain at least one complete parent of confirmed Gold evidence; otherwise 0 |
+| MRR | `MRR@100` | Reciprocal rank of the first Gold parent within 100; 0 if absent |
 | Answer Set F1 | `Answer Set F1` | After normalization and confirmed deduplication, maximum one-to-one matching gives `2 * matches / (prediction_count + gold_count)` |
 | Answer Set EM | `Answer Set EM` | 1 if predicted and gold answer sets match completely; otherwise 0 |
-| Grounded EM | `Grounded EM` | 1 if Answer Set EM is 1 and cited fine-grained evidence proves every answer; otherwise 0 |
 
-All eight columns are macro-averaged over 500 questions and multiplied by 100. Retrieval uses complete sources; Grounded EM uses actual statements, rows, whole tables, or fields. Retrieving the right table is not the same as citing the row that supports the answer.
+All five columns are macro-averaged over 500 questions and multiplied by 100. Retrieval uses complete source records. Retrieving a Gold parent does not establish that every unit in it supports the answer.
+
+The published Gold file contains evidence lists and precise selectors, without the human proof chains defining required combinations and alternatives. `Sufficiency@5`, `Sufficiency@10`, and `Grounded EM` are therefore unavailable in this release. They are not replaced by the requirement to retrieve or cite every Gold unit: alternative supporting sources can make that requirement incorrect. Version 2.0.0 scores should be compared using the supported metrics and the same corpus version.
 
 ## Answer matching and pending adjudication
 
@@ -80,7 +79,7 @@ All eight columns are macro-averaged over 500 questions and multiplied by 100. R
 
 The configured judge is `gpt-6-luna`, with provider-default generation parameters and the English `judge_prompt.txt`. The judge configuration/version and literal prompt are bound to cached decisions. The request identifier is an alias, not an assumed immutable dated checkpoint. Requested/returned identity and observable settings are recorded; unavailable metadata remains `null`.
 
-A pending pair means equivalence is not yet confirmed, not that answers or evidence are missing. For example, an unregistered alternative name for the same country may need adjudication. While any answer pair affecting matching remains pending, aggregate Answer Set F1, Answer Set EM, and Grounded EM are `null`; retrieval metrics remain computable. A failed or `uncertain` judge result stays pending rather than becoming a baseline error.
+A pending pair means equivalence is not yet confirmed, not that answers or evidence are missing. For example, an unregistered alternative name for the same country may need adjudication. While any answer pair affecting matching remains pending, aggregate Answer Set F1 and Answer Set EM are `null`; retrieval metrics remain computable. A failed or `uncertain` judge result stays pending rather than becoming a baseline error.
 
 To resolve pending pairs:
 
@@ -88,7 +87,7 @@ To resolve pending pairs:
 2. Score with that configuration to obtain its bound pending queue.
 3. Use `scripts/evaluate.sh --adjudicate` for the fixed judge, or an official review. Offline `score.py` never sends requests.
 4. For imported review, fill `decision` (`equivalent`, `different`, or `uncertain`) and a short `reason` in `judgments.template.json`, preserving `context` and `cache_key`.
-5. Rescore with the same configuration and `--judgments /path/to/judgments.json`. Mismatched context is rejected. Remaining unresolved pairs keep the three answer aggregates unknown.
+5. Rescore with the same configuration and `--judgments /path/to/judgments.json`. Mismatched context is rejected. Remaining unresolved pairs keep the two answer aggregates unknown.
 
 Confirmed decisions for the same version, question, and normalized answer pair are reused, including across repeated runs. The shared `judge_cache.json` uses a file lock; it does not affect baseline retrieval time. Keys are direct canonical JSON, without hashes. The judge compares the supplied pair only; it does not answer the question anew, add gold answers, or use external knowledge. Judge usage/time is recorded separately from method efficiency.
 
@@ -96,8 +95,8 @@ Generation and judge requests explicitly disable tools (`tools=[]`, `tool_choice
 
 ## Quality outputs
 
-- `summary.json`: eight quality columns, missing/failed question counts, and pending-pair counts.
-- `per_question.jsonl`: all 500 question results, matches, citation sufficiency, and unconfirmed references.
+- `summary.json`: five supported quality columns, missing/failed question counts, pending-pair counts, and explicit reasons why proof-dependent metrics are unavailable.
+- `per_question.jsonl`: all 500 question results, answer matches/counts, and unconfirmed citation keys. No citation-sufficiency result is inferred.
 - `run_manifest.json`: binding between evaluation input, data/evaluator versions, matching policy, and judge configuration; this is a runtime artifact, not a published data manifest.
 - `pending_answer_pairs.jsonl`: unresolved pairs, empty when none remain.
 - `judgments.template.json`: generated when needed; imported/applied decisions are retained in `judgments.used.json`.
@@ -162,7 +161,7 @@ CLI `--seed` overrides experiment configuration, then defaults to 0. IDs are str
 
 Every request has a 60-second total deadline. Retryable transport errors, limits, temporary server errors, and timeouts permit three additional attempts, each preceded by a fixed 5-second wait. Requests are not extended merely because stream tokens arrive. The same policy applies to the judge, with separate consumption/time records. Local timeouts abort engine requests; remote interruption cannot guarantee that provider execution or billing stopped, so missing usage stays unknown.
 
-Illegal JSON, truncation, or invalid/invisible citations fail without repair calls or gold-guided retries. Valid but insufficient citations are scored by Grounded EM. Failures produce legal prediction records with empty answers/citations.
+Illegal JSON, truncation, or invalid/invisible citations fail without repair calls or gold-guided retries. Gold membership is a citation diagnostic, not a proof-sufficiency judgment. Failures produce legal prediction records with empty answers/citations.
 
 A durable journal records an attempt before submission and its safe final content/usage after return, then commits each question. Prediction/trace files can be rebuilt from commits. Terminal committed questions, including failures, are skipped on identical-config resume. An interrupted unconfirmed remote attempt remains recorded, but cannot offer a strict exactly-once guarantee. Unobserved time across a hard interruption makes `timing.active_seconds=null`, preserving `known_active_seconds` without counting downtime or guessing missing intervals.
 

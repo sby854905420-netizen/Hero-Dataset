@@ -10,10 +10,10 @@ Method rules are in `configs/method.yml` relative to this directory. Machine pat
 
 Use Conda `Hero` with Python 3.11. `environment.yml` and `environment.lock.yml` record the local dependency stack: vLLM 0.33.0, PyTorch 2.14.0/CUDA 13.0, Transformers 5.20.2, NumPy 2.3.5, GPU Faiss, and GCC/G++ 14. These files describe the tested local software stack, not a guarantee of compatibility with every GPU. The API adapter uses HTTPX directly and does not require the OpenAI SDK.
 
-Run from the repository root:
+First download and extract the [v2.0.0 full corpus](../../Data/data_repository/README.md). A Git clone does not include the large corpus JSONL files. Run from the repository root:
 
 ```bash
-bash scripts/prepare_data.sh --output-dir outputs/serialized/final-v1
+bash scripts/prepare_data.sh --output-dir outputs/serialized/final-v2
 ```
 
 `--workers` controls serialization threads (default 4); it does not authorize concurrent access to a shared GPU Faiss object. The output directory must not exist. Only these corpus files are read:
@@ -28,7 +28,7 @@ Outputs are `records.jsonl` (one complete source with `context_text`, `units`, a
 
 - **KG:** each statement target retains Subject, Relation, Value, Qualifiers, and Rank. Entity/property IDs, qualifier associations, date precision, quantity units, and statement GUIDs are preserved. Multi-target parents retain every target. Raw statement qualifiers determine their values; normalized copies supply names only.
 - **Tables:** Markdown rows retain page, section, caption, layered headers, original row/column coordinates, list boundaries, and cell content.
-- **Infoboxes:** retain page and section, then fields/values in original order, including repeated fields, internal headings, and context rows. Headings do not become invented citable fields.
+- **Infoboxes:** retain page and section, then fields/values in original order, including repeated fields, internal headings, and image captions. Headings do not become invented citable fields. Caption rows use `infobox_row` selectors addressed by their position in the source `rows` array.
 
 Complete source IDs, including `@occ` suffixes, are unchanged. Units carry original statement-target, table-row, or infobox-field selectors. Serialization units are not embedding chunks.
 
@@ -67,7 +67,7 @@ Chunks rank by descending cosine score. The current implementation leaves equal-
 
 The top K chunks select their complete parent KG records, tables, or infoboxes. Restore parents, deduplicate in first-hit order, and pass them to the prompt. If fewer than K parents remain, do not retrieve more to fill the count.
 
-Retrieval evaluation independently retains up to 100 unique parents. A parent's score is its highest chunk score; exact all-chunk ranking is aggregated in first-hit order. This ranking supports Sufficiency@5/10, Hit@5/10, and MRR@100. Extra evaluation candidates are not passed to generation.
+Retrieval evaluation independently retains up to 100 unique parents. A parent's score is its highest chunk score; exact all-chunk ranking is aggregated in first-hit order. This ranking supports Hit@5/10 and MRR@100. Extra evaluation candidates are not passed to generation.
 
 Qwen's actual tokenizer checks the complete prompt plus output reservation. A context overflow fails with the observed length and configuration. The code does not reduce K, remove sources, or crop full evidence automatically. API context limits are enforced by the provider rather than a Qwen-tokenizer estimate. Large-K context feasibility still requires trials.
 
@@ -95,9 +95,9 @@ Three fixed demonstrations come from human-reviewed reserve questions outside th
 | 759 | Infobox / multiple items | What countries is Mel Gibson a citizen of? | United States; Ireland |
 | 7461 | Table / layered-header Boolean | Has the movie The Godfather won any Academy Award? | Yes |
 
-The first two were approved; the third was corrected and then approved. Their selected sources are outside the 1,633-source corpus. Evidence was recovered from the historical source material and serialized with the same rules, retaining date precision, the complete citizenship list, and the relevant Academy Awards row/column context.
+The first two were approved; the third was corrected and then approved. Their question IDs are outside the final 500. Evidence was recovered from the historical source material and serialized with the same rules, retaining date precision, the complete citizenship list, and the relevant Academy Awards row/column context. Demonstrations are fixed prompt assets; the indexer does not add their snippets as extra corpus records.
 
-Example `provenance` records review status, original IDs, selectors, and upstream revisions. It is not sent to the model, and original review files are not needed at runtime. Demonstrations use `DEMO1_E1`, `DEMO2_E1`, and `DEMO3_E1`; current questions may cite only their own evidence labels. Examples are not indexed or added as benchmark members. All demonstration messages count as input tokens in one request, not three extra calls. Prompt assets are saved and compared directly on resume, without file digests.
+Example `provenance` records review status, original IDs, selectors, and upstream revisions. It is not sent to the model, and original review files are not needed at runtime. Demonstrations use `DEMO1_E1`, `DEMO2_E1`, and `DEMO3_E1`; current questions may cite only their own evidence labels. The example assets themselves are not indexed or appended to the retrieval corpus. All demonstration messages count as input tokens in one request, not three extra calls. Prompt assets are saved and compared directly on resume, without file digests.
 
 ## Generation models and deployment
 
@@ -160,7 +160,7 @@ The experiment unit is one complete dataset run. Independent jobs own separate G
 
 Each generation attempt has a 60-second total deadline, including connection, provider queueing, prefill, and generation. Model loading and retrieval are outside that request deadline. Retryable transport errors, rate limits, temporary server failures, and timeouts allow up to three additional attempts (four total), with a fixed 5-second wait. Actual wait is measured and excluded from question latency; request time remains included. Transport automatic retries are disabled.
 
-Invalid JSON, output truncation, or invisible/invalid citations do not trigger answer repair or regeneration. A failed prediction has a legal ranking and empty answer/citation arrays. Structurally valid but insufficient citations are evaluated by Grounded EM; the runner never reads gold to decide whether to retry.
+Invalid JSON, output truncation, or invisible/invalid citations do not trigger answer repair or regeneration. A failed prediction has a legal ranking and empty answer/citation arrays. Structurally valid citations are checked against the published Gold set as a diagnostic; the runner never reads gold to decide whether to retry. The current Gold lists do not define complete proof combinations, so Grounded EM and Sufficiency are not computed.
 
 The journal records requests before sending and final content/usage after return. Each completed question is committed durably before the recoverable prediction/trace views are appended. `--resume` requires identical effective configuration, prompt assets, index metadata, seed, and question order. All committed terminal questions, including failures, are skipped. Each run directory has an exclusive writer lock.
 
@@ -192,7 +192,7 @@ Each run contains:
 - `efficiency.json`: the three agreed efficiency averages.
 - `metrics/`: quality outputs for a full run; unresolved matches may require the fixed judge.
 
-Full runs automatically score. With unresolved pairs, enabled adjudication, and an API key, the fixed judge is called; `--skip-judge` defers that. Debug subsets summarize efficiency without claiming full-dataset quality. For definitions and standalone commands, see [evaluation](../../evaluation/README.md).
+The runner reads final questions from `Data/qa_pairs.jsonl`; answers and `Data/gold_annotations.jsonl` are used only by evaluation. Full runs automatically score. With unresolved pairs, enabled adjudication, and an API key, the fixed judge is called; `--skip-judge` defers that. Debug subsets summarize efficiency without claiming full-dataset quality. For definitions and standalone commands, see [evaluation](../../evaluation/README.md).
 
 Only mean input/output/total tokens, mean LLM calls, and mean question time are efficiency metrics. Failures and retries count. Reasoning is part of output, cached input is part of input, and neither is added twice. Judge usage is separate. No P50/P95 or comparison tables are produced.
 

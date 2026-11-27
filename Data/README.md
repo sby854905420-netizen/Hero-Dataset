@@ -1,165 +1,126 @@
-# Hero Dataset data documentation
+# Hero Dataset data
 
-This directory contains the final revised QA, complete retrieval corpus, and evaluation annotations. JSONL files use UTF-8, with one JSON object per line, and do not depend on files outside this repository.
+Version 2.0.0 contains 500 human-confirmed questions, 665 answer items, and a retrieval corpus of 184,856 complete records. Questions comprise 245 `movies` and 255 `tvseries` items. There is one evaluation set and no additional train/development split.
 
-| Item | Count |
-| --- | ---: |
-| Questions | 500 |
-| Gold answer items | 645 |
-| Question-level evidence uses | 2,099 |
-| Distinct fine-grained evidence references | 2,055 |
-| Complete source records | 1,633 |
-| Complete KG records | 747 |
-| Complete tables | 528 |
-| Complete infoboxes | 358 |
-| Statement targets inside KG records | 1,058 |
+JSONL files use UTF-8 with one JSON object per line. Complete source content and original identifiers are preserved. Large corpus files are downloaded from [GitHub Releases](https://github.com/sby854905420-netizen/Hero-Dataset/releases/tag/v2.0.0); cloning the repository alone does not download them.
 
-The `domain` metadata contains 245 `movies` and 255 `tvseries` questions. There is one 500-question evaluation set and no additional train/dev/test split. Corpus and annotation text is preserved in its original language; documentation translation does not rewrite the data.
+## Files and responsibilities
 
-## Files and joins
+After downloading and extracting the selected Release assets from the repository root:
 
 ```text
 Data/
 ├── README.md
 ├── LICENSE.md
+├── qa_pairs.jsonl
+├── gold_annotations.jsonl
 ├── source_mapping.jsonl
-├── qa/qa_pairs.jsonl
 ├── data_repository/
 │   ├── kg/kb.jsonl
 │   ├── tables/tables.jsonl
 │   └── infoboxes/infoboxes.jsonl
-└── annotations/
-    ├── evaluation_annotations.jsonl
-    └── evidence_sources.jsonl
+└── negative_samples/
+    ├── negative_t1/
+    ├── negative_t2/
+    └── negative_t3/
 ```
 
-Methods read `question_id` and `question` from QA and index only `data_repository/`. Gold answers, proofs, and question-specific evidence annotations are evaluation inputs, not retrieval documents or generation prompt inputs. A separate questions file is unnecessary.
+The three negative directories are optional: the full corpus already includes their contents. Each separately downloaded negative directory has the same `kg/`, `tables/`, and `infoboxes/` file structure as the full corpus.
 
-- `question_id` joins QA, per-question evaluation annotations, and per-evidence annotations.
-- `source_record_id` joins evidence, source mapping, and complete corpus records.
-- `evidence_ref` / `ref` locates a statement target, table row, whole table, or infobox field within a source.
-- `repository_file` and `repository_locator.file` are relative to `Data/`. Record IDs and paths are sufficient; old archive offsets and line numbers are not required.
+| Metadata file | One row represents | Information stored |
+| --- | --- | --- |
+| `qa_pairs.jsonl` | One question | ID, question, confirmed answers, domain |
+| `gold_annotations.jsonl` | One question's Gold evidence | Question ID, exact evidence references, parent record IDs, selectors |
+| `source_mapping.jsonl` | One complete corpus record | Record ID, source type, corpus file, upstream provenance |
 
-## Questions and answers: `qa/qa_pairs.jsonl`
+`question_id` joins QA and Gold annotations. `source_record_id` joins Gold evidence, source mapping, and complete corpus records. These shared keys are intentional; question/answer text, evidence positions, and provenance are maintained in their respective files. There is no separate `evidence_sources.jsonl`, duplicated answer list in Gold annotations, or published human proof chain.
+
+Methods use the question and domain as inputs and index only the corpus. Gold answers and question-specific evidence membership must not be included in retrieval documents or generation prompts.
+
+## Questions and answers: `qa_pairs.jsonl`
 
 | Field | Meaning |
 | --- | --- |
-| `question_id` | Original question ID as a unique string; IDs need not be consecutive |
-| `question` | Final question text |
-| `answers` | Revised gold answer array; each item has `id` and `label` |
+| `question_id` | Unique string; IDs need not be consecutive |
+| `question` | Final rewritten question |
+| `answers` | Human-confirmed answer array, each item containing `id` and `label` |
 | `domain` | `movies` or `tvseries` |
 
 ```json
-{"question_id":"9","question":"What is the Original Language of the film Encanto?","answers":[{"id":"Q1860","label":"English"}],"domain":"movies"}
+{"question_id":"9","question":"What is the Original Language of the film Encanto?","answers":[{"id":"","label":"English"}],"domain":"movies"}
 ```
 
-An answer `id` is not necessarily a Wikidata QID: it may be a date, number, text, or empty string. Do not force all answers into entity IDs, or expand year precision into a full date. The zero-based position in `answers` is used by proof-branch `answer_indices`. Matching, aliases, precision, and tolerances belong to `evaluation/`.
+The current export leaves answer `id` empty and preserves the confirmed answer in `label`; it does not infer or inherit entity IDs from the original dataset. Answer matching, aliases, precision, and tolerances are defined under `evaluation/`.
 
-## Complete retrieval corpus: `data_repository/`
+## Gold evidence: `gold_annotations.jsonl`
 
-Each line is one complete stored source, retaining content and context rather than only the evidence selected by a question. These parent records are the units of retrieval evaluation.
-
-### KG: `kg/kb.jsonl`
-
-- The source ID is `record_uid`, for example `kb-record:1256660`.
-- Single-target records store fields such as `subject_qid`, `subject_label`, `pid`, `property_label`, `value`, and `statement_guid` directly.
-- Some records wrap multiple targets in `targets`. Read them with `parent.get("targets", [parent])`, not only the first displayed top-level statement.
-- `value` preserves its stored type, including entities, strings, times, and quantities. `wikidata_statement` preserves raw qualifiers, value types, rank, and available references. Inspect `wikidata_statement.qualifiers` when reading qualifiers.
-- Existing `rev_id`, `rev_timestamp`, `kb_snapshot`, and recovery metadata are retained. They do not imply one revision time for every statement.
-
-### Tables: `tables/tables.jsonl`
-
-- The source ID is `evidence_id`, for example `table:64725222:1208159420:1`.
-- `page_title`, `page_id`, `rev_id`, `section_path`, and `table_idx` identify the page revision and table.
-- `header` preserves multiple header layers. `rows` contains all data rows. A selector's `row_index` is a position in `rows`, not an absolute HTML row number, and excludes headers stored separately in `header`.
-- Cells may contain `text`, `links`, `text_items`, and `item_boundaries`. Spans have already been processed; do not expand `rowspan`/`colspan` again or merge rows with identical text.
-- Existing `row_legacy_ids`, entity bindings, and correction metadata are retained. They are not gold support labels.
-
-### Infoboxes: `infoboxes/infoboxes.jsonl`
-
-- The source ID is `evidence_id`, for example `info:62975109:1280037512:0`.
-- `page_title`, `page_id`, `rev_id`, `section_path`, and `box_idx` identify the page revision and infobox.
-- `rows` includes normal fields, internal headings, and other context. Keeping only `row_type=normal` loses context and may change field-occurrence identities.
-- Field rows retain `field`, `value`, `value_items`, list boundaries, links, and `row_idx`. Repeated names must not be overwritten in a simple dictionary.
-
-Complete IDs may have suffixes such as `@occ`. Preserve the full ID throughout retrieval, prediction, citation, and evaluation.
-
-## Per-question gold: `annotations/evaluation_annotations.jsonl`
-
-Each line corresponds to the same question ID and answers in QA.
+This file has 500 rows containing 2,291 evidence uses and 2,222 distinct fine-grained references.
 
 | Field | Meaning |
 | --- | --- |
-| `question_id`, `answers` | Question identity and answers, consistent with QA |
-| `answer_items` | Stable `gold_item_id`, canonical identity, and label for each answer |
-| `proof_branches` | Confirmed proof branches supporting answer items |
-| `relevant_record_ids` | Confirmed relevant complete source IDs |
-| `evidence` | Fine-grained evidence: `ref`, parent ID, selector, and relevance |
+| `question_id` | Question whose answer is supported |
+| `evidence` | List of confirmed Gold evidence units |
+| `evidence[].ref` | Exact fine-grained evidence reference |
+| `evidence[].source_record_id` | Complete parent record containing the unit |
+| `evidence[].selector` | Position of that unit inside the parent |
 
-Interpret `proof_branches` as follows:
+An illustrative row showing the structure is:
 
-1. A branch's `answer_indices` identifies the answer items it supports.
-2. All `steps` in a branch must hold.
-3. Each step's `or_options` lists alternative support combinations. One complete alternative is sufficient; all references inside that alternative are jointly required.
-4. Multiple branches may support one answer. Valid branches together must cover every gold answer item.
-5. Auxiliary sources may occur in joint support. This does not make each source independently sufficient.
+```json
+{"question_id":"example-question","evidence":[{"ref":"example-table#row=2","source_record_id":"example-table","selector":{"unit":"table_row","row_index":2}}]}
+```
 
-Retrieval hits use complete parents. Grounded EM uses fine-grained selectors and confirmed proof combinations. Retrieving a table does not make every row a valid supporting citation.
+The illustration is not an additional benchmark item. Real references must be copied exactly, including URL encoding and suffixes such as `@occ`. A manually assigned reference may not embed its parent ID; use `source_record_id` rather than deriving a parent by splitting `ref`.
 
-## Per-evidence annotations: `annotations/evidence_sources.jsonl`
+All positions and occurrence counts are zero-based:
 
-A row is one evidence use by one question. Sources or fine-grained references used by different questions appear in multiple rows.
-
-| Field | Meaning |
+| Evidence unit | Selector |
 | --- | --- |
-| `annotation_id` | Stable use identifier, `question_id::evidence_index` |
-| `question_id`, `evidence_index` | Question ID and position in its evidence array |
-| `original_evidence_index` | Historical annotation metadata, not a current array position |
-| `evidence_ref` | Fine-grained reference matching gold `evidence.ref` |
-| `source_type` | `kb`, `table`, or `info` |
-| `source_record_id` | Complete parent ID |
-| `selector` | Locator for the actual evidence within the parent |
-| `repository_locator` | Corpus `file` and `record_uid` in this release |
-| `upstream` | Actual selected evidence identity; the selected target for multi-target KG records |
-| `support_scope` | Facts the evidence supports |
-| `proof_usage` | Existing proof-use relationships and joint citations; final sufficiency is defined by `evaluation_annotations.jsonl` |
-| `source_identity`, `same_origin_refs` | Existing origin identities; representations of one statement are not automatically independent origins |
-| `retrieval_relevant` | Confirmed relevance for this question |
+| KG statement target | `{"unit":"statement_target","target_index":0,"statement_guid":"Q…$…"}` |
+| Table data row | `{"unit":"table_row","row_index":2,"whole_table":false}` |
+| Complete table | `{"unit":"whole_table","whole_table":true}` |
+| Infobox field | `{"unit":"infobox_field","field":"Language","field_occurrence":0,"row_index":15}` |
+| Infobox image-caption row | `{"unit":"infobox_row","row_index":0}` |
 
-Twenty-three auxiliary evidence uses have no explicit `proof_usage` entry. Their content, relevance, and `support_scope` remain available. An empty array neither establishes independent sufficiency nor authorizes a new proof. Every gold answer already has confirmed complete proof branches.
+Table `row_index` addresses the stored `rows` array, excluding separately stored headers. Infobox `field_occurrence` counts repeated equal field names in original order; an optional field `row_index` must agree with its stored row identity. For `infobox_row`, `row_index` addresses the `rows` array and the selected row must have `row_type="image_caption"`.
 
-All indexes and occurrence counts are zero-based:
+Gold labels apply only to these selected evidence units. A complete table, infobox, or KG parent is retained as context, and its unselected contents do not become Gold. The evidence list does not encode which units are jointly necessary, interchangeable, or sufficient on their own.
 
-| Evidence unit | Example selector | Reference suffix |
-| --- | --- | --- |
-| KG statement target | `{"unit":"statement_target","target_index":0,"statement_guid":"Q…$…"}` | `#target=0` |
-| Table data row | `{"unit":"table_row","row_index":0,"whole_table":false}` | `#row=0` |
-| Complete table | `{"unit":"whole_table","whole_table":true}` | `#table=all` |
-| Infobox field | `{"unit":"infobox_field","field":"Language","field_occurrence":0,"row_index":15}` | `#field=Language&occurrence=0` |
+## Complete corpus: `data_repository/`
 
-Infobox `field_occurrence` counts equal names in original row order. Its optional `row_index` is the selected row's original `row_idx`. Field names in reference strings are URL-encoded; selector `field` retains the original text. Whole-table and row references are not interchangeable.
+| Collection | KG | Tables | Infoboxes | Total |
+| --- | ---: | ---: | ---: | ---: |
+| Golden Evidence parents | 716 | 580 | 406 | 1,702 |
+| Negative T1 | 135 | 40 | 34 | 209 |
+| Negative T2 | 9,499 | 5,431 | 5,652 | 20,582 |
+| Negative T3 | 134,765 | 11,770 | 15,828 | 162,363 |
+| **Full corpus** | **145,115** | **17,821** | **21,920** | **184,856** |
 
-## Source mapping: `source_mapping.jsonl`
+The four collections contain distinct complete parent records. The released corpus combines them, preserving full records rather than selected evidence fragments. KG `record_uid` and table/infobox `evidence_id` provide complete record IDs. Preserve complete IDs, including any suffixes.
 
-This file has one row per complete parent: 1,633 rows. It does not record question membership or historical release migrations.
+- **KG, `kg/kb.jsonl`:** a record can contain a single statement target or multiple `targets`; iterate with `parent.get("targets", [parent])`. Retain all targets and typed values, direction, qualifiers, rank, and available statement/revision identities. Inspect raw `wikidata_statement.qualifiers` when interpreting qualifiers.
+- **Tables, `tables/tables.jsonl`:** retain page/revision and section context, layered `header`, all `rows`, cell lists/links, and processed spans. Do not expand spans a second time or merge equal-text rows.
+- **Infoboxes, `infoboxes/infoboxes.jsonl`:** retain ordered `rows`, repeated fields, internal headings, image captions, list boundaries, and links. Reducing fields to a dictionary loses repeated occurrences and context.
+
+Existing recovery metadata and entity bindings in raw sources are not Gold labels. See [corpus download instructions](data_repository/README.md) and [negative collection instructions](negative_samples/README.md).
+
+## Complete-record provenance: `source_mapping.jsonl`
+
+The mapping has one row for each of the 184,856 complete records, including negative records. It does not contain question membership, Gold selectors, answers, or proof chains.
 
 | Field | Meaning |
 | --- | --- |
 | `source_record_id` | Complete source ID |
 | `source_type` | `kb`, `table`, or `info` |
-| `repository_file` | Corpus path relative to `Data/` |
-| `upstream` | Existing complete upstream identity metadata |
+| `repository_file` | Corpus file path relative to `Data/` |
+| `upstream` | Original record identities and revision provenance |
 
-Wikipedia table and infobox metadata retains the site, page title/ID, revision, fixed `oldid_url`, section path, and `table_idx` or `box_idx`, plus available anchors and page metadata. Extractor indexes are zero-based; they are not the numbers a reader sees in a browser.
+Wikipedia records retain available page title/ID, revision, revision URL, section, and table/infobox index. KG `upstream.targets` retains the available subject, property, statement GUID, and revision identity for every target, including targets not cited as Gold.
 
-For KG records, `upstream.targets` covers **every target** with `target_index`, `subject_qid`, `statement_guid`, `property_id`, `rev_id`, `revision_url`, and available metadata: 1,058 targets in total. Even targets not selected as question evidence retain their identities. Top-level summaries do not replace target-specific provenance.
+Use `repository_file` and `source_record_id` to read the complete released record. Upstream identities support tracing it to Wikipedia or Wikidata. They do not by themselves reproduce byte-identical JSON: the original extraction, span/header processing, list/link parsing, type conversion, and recovery rules also affect the result. Use the released JSONL records to reproduce benchmark experiments.
 
-To reconstruct a source, fix the recorded revision before locating its table, infobox, or statement under the original extraction semantics. Snapshot dates describe acquisition batches; precise identity comes from per-record and per-target revisions.
+## Publication boundary
 
-Revisions and table indexes alone cannot guarantee identical reconstructed JSON. HTML acquisition, enumeration/filtering, nesting, span expansion, header projection, text/list boundaries, link parsing, KG type conversion, and existing recovery corrections affect extraction. The mapping supports source tracing; no automatic refetching program is included. Use the released complete JSONL corpus to reproduce benchmark experiments.
+QA and Gold labels reflect final human review. Negative T1 contains model-proposed material left outside confirmed Gold, after excluding complete Gold parents. T2 and T3 undergo shared-repository model screening and global removal of selected supporting parents; this does not guarantee that retrieval-based screening discovered every possible support path.
 
-## Release boundary
-
-Complete source text is preserved. Source membership matches the parents referenced by the final annotations. Earlier candidate pools, review files, migration maps, separate questions files, data manifests, checksum lists, and local validation scripts are excluded.
-
-See [LICENSE.md](LICENSE.md) for the data licensing status.
+Original dataset answer/entity hints, human review notes, model execution logs, candidate repositories, and supporting records removed during screening are excluded from public metadata and negative packages. See [LICENSE.md](LICENSE.md) for the data licensing status.
