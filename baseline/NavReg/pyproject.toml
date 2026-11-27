@@ -11,13 +11,14 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
   "numpy>=2.3,<2.4",
   "torch==2.14.0",
-  "sentence-transformers>=6.3,<7",
-  "transformers>=5.16.1,<5.21",
+  "transformers==5.20.2",
   "huggingface-hub>=2.4,<3",
   "tqdm>=4.70,<5",
   "PyYAML>=6.0,<7",
   "httpx>=0.28,<1",
-  "vllm==0.33.0",
+  "accelerate>=1.10,<2",
+  "bitsandbytes==0.50.2",
+  "sentencepiece>=0.2.3,<0.3",
 ]
 
 # GPU Faiss and the matching CUDA/PyTorch build are installed through the supplied

@@ -16,6 +16,10 @@ Version 2.0.0 contains **500 human-confirmed questions**, comprising 245 Movie a
 
 The complete repository combines Golden Evidence and all three Negative Samples: 145,115 KG records, 17,821 tables, and 21,920 infoboxes. Only the precise units listed in the Gold annotations are labeled Gold. Separate Negative Samples allow users to compose different difficulty variants.
 
+## Naive RAG baseline
+
+Naive RAG uses **BAAI/bge-m3** dense retrieval and **unsloth/Qwen3.8-27B-unsloth-bnb-4bit** generation through Transformers with NF4 weights and BF16 compute. Every machine uses the same implementation and checkpoint. Set paths and context/output budgets in `configs/runtime.yml`; see the [baseline instructions](baseline/NavReg/README.md) for setup and commands.
+
 ## Downloads
 
 Download the four files from the [v2.0.0 Release](https://github.com/sby854905420-netizen/Hero-Dataset/releases/tag/v2.0.0). Extract the selected archives from the repository root; a Git clone does not include these corpus files.

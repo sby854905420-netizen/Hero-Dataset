@@ -46,3 +46,6 @@ test_*.py
 
 # Local implementation handbook; excluded from GitHub and release exports.
 /baseline/NavReg/IMPLEMENTATION_GUIDE_LOCAL.txt
+
+# Private server submission and resource-sharing scripts.
+/Hero Command/

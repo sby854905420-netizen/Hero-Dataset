@@ -19,9 +19,8 @@ def main(argv=None):
     run = commands.add_parser('run', help='Run one experiment; one command does not sweep K or repeat seeds')
     for command in (build, run):
         command.add_argument('--method', choices=['NavReg'], default='NavReg')
-        command.add_argument('--profile', default='local', help='local, cluster, or a machine YAML path')
+        command.add_argument('--config', type=Path, help='Runtime YAML; defaults to configs/runtime.yml')
         command.add_argument('--experiment', type=Path)
-        command.add_argument('--embedding', choices=['large', 'm3'])
         command.add_argument('--serialized-dir', type=Path)
     build.add_argument('--output-dir', type=Path, help='New bundle directory; defaults to indexes_root/embedding')
     run.add_argument('--index-dir', type=Path)
@@ -39,7 +38,7 @@ def main(argv=None):
             from .prepare import serialize_repository
             report = serialize_repository(args.data_root, args.output_dir, args.workers)
         else:
-            config = load_config(args.profile, args.experiment, args.embedding, getattr(args, 'seed', None))
+            config = load_config(args.config, args.experiment, getattr(args, 'seed', None))
             if args.command == 'build-index':
                 from .index import build_index
                 report = build_index(config, args.output_dir, args.serialized_dir)

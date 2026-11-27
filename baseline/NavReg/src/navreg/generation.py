@@ -111,6 +111,22 @@ def unknown_usage(input_tokens=None):
             'reasoning_tokens': None, 'cached_input_tokens': None}
 
 
+def _qwen_response(generator, generated, usage, finish_reason):
+    if generator.end_think[0] in generated:
+        boundary = generated.index(generator.end_think[0]) + 1
+        usage['reasoning_tokens'] = boundary
+        visible = generated[boundary:]
+    elif generator.profile['enable_thinking'] or generator.start_think[0] in generated:
+        usage['reasoning_tokens'] = None
+        raise GenerationError('reasoning_boundary_missing', usage=usage)
+    else:
+        usage['reasoning_tokens'] = 0
+        visible = generated
+    return {'final_response_text': generator.tokenizer.decode(visible, skip_special_tokens=True).strip(),
+            'usage': usage, 'status': 'completed' if finish_reason == 'stop' else 'failed',
+            'metadata': {'model': generator.identity['model'], 'finish_reason': finish_reason}}
+
+
 class OpenAIGenerator:
     """Responses HTTP transport with no hidden retries, tools or conversation state."""
     def __init__(self, config):
@@ -173,53 +189,81 @@ class OpenAIGenerator:
         await self.client.aclose()
 
 
-class QwenGenerator:
-    """vLLM asynchronous engine; qwen3 think boundaries are counted on generated IDs."""
+class TransformerGenerator:
+    """Single-GPU prequantized NF4 inference; cancellation drains the worker."""
     def __init__(self, config):
-        import os
+        import asyncio
         import importlib.metadata
-        os.environ.setdefault('VLLM_WORKER_MULTIPROC_METHOD', 'spawn')
-        try:
-            from vllm import AsyncLLMEngine, AsyncEngineArgs
-        except ImportError:
-            raise RuntimeError('vLLM is not installed; install a checkpoint-compatible GPU build before Qwen trials') from None
-        from transformers import AutoTokenizer
-        from vllm.config import KernelConfig
-        hf, deployment = config['generation']['huggingface'], config['deployment']
-        installed = importlib.metadata.version('vllm')
-        if hf.get('engine_version') and installed != hf['engine_version']:
-            raise ValueError('installed vLLM version differs from the experiment')
+        import torch
+        from transformers import AutoConfig, AutoTokenizer, Qwen3_5ForConditionalGeneration
+
+        hf = config['generation']['huggingface']
+        installed = importlib.metadata.version('transformers')
+        expected = hf.get('engine_version')
+        if expected and installed.split('+', 1)[0] != expected:
+            raise ValueError('installed Transformers version differs from the experiment')
+        if not torch.cuda.is_available() or torch.cuda.device_count() != 1 or not torch.cuda.is_bf16_supported():
+            raise ValueError('Transformers BF16 generation requires one visible BF16-capable CUDA GPU')
+        if hf['unquantized_dtype'] != 'bfloat16' or hf['quantization'] != 'bitsandbytes_nf4':
+            raise ValueError('Transformers requires a prequantized NF4 checkpoint with BF16 compute')
         self.profile = hf['sampling_profiles'][hf['profile']]
         self.mode = hf['profile']
-        self.max_tokens = deployment['max_new_tokens_by_mode'][self.mode]
-        self.input_budget = deployment['input_token_budget']
-        self.window = deployment['context_window_tokens']
-        self.tokenizer = AutoTokenizer.from_pretrained(deployment['model_id'], revision=deployment['revision'],
-                                                       cache_dir=config['paths'].get('model_cache'))
+        self.max_tokens = hf['max_new_tokens_by_mode'][self.mode]
+        self.input_budget = hf['input_token_budget']
+        self.window = hf['context_window_tokens']
+        output_budgets = list(hf['max_new_tokens_by_mode'].values())
+        if (any(type(value) is not int or value < 1 for value in [self.window, self.input_budget, *output_budgets])
+                or self.window > 262144 or self.input_budget + max(output_budgets) > self.window):
+            raise ValueError('context budgets must be positive integers with input plus output within the window and native 262144-token limit')
+        self.timeout = config['generation']['request_timeout_seconds']
+        self._lock = asyncio.Lock()
+        loading = {'revision': hf['revision'], 'cache_dir': config['paths'].get('model_cache')}
+        checkpoint = AutoConfig.from_pretrained(hf['model_id'], **loading)
+        quantization = getattr(checkpoint, 'quantization_config', None)
+        from bitsandbytes.nn import Linear4bit
+        bnb_version = importlib.metadata.version('bitsandbytes')
+        if bnb_version != hf['bitsandbytes_version']:
+            raise ValueError('installed bitsandbytes version differs from the experiment')
+        if (not isinstance(quantization, dict) or quantization.get('quant_method') != 'bitsandbytes'
+                or not quantization.get('load_in_4bit') or quantization.get('bnb_4bit_quant_type') != 'nf4'
+                or quantization.get('bnb_4bit_use_double_quant') is not True):
+            raise ValueError('expected a prequantized bitsandbytes NF4 double-quant checkpoint')
+        # Keep the publisher's skipped layers; override only arithmetic precision.
+        checkpoint.quantization_config = {**quantization, 'bnb_4bit_compute_dtype': 'bfloat16'}
+        self.tokenizer = AutoTokenizer.from_pretrained(hf['model_id'], **loading)
         self.chat_options = {key: self.profile[key] for key in ('enable_thinking', 'preserve_thinking', 'reasoning_effort') if key in self.profile}
         self.start_think = self.tokenizer.encode('<think>', add_special_tokens=False)
         self.end_think = self.tokenizer.encode('</think>', add_special_tokens=False)
         if len(self.start_think) != 1 or len(self.end_think) != 1:
             raise ValueError('qwen3 reasoning requires native single-token think delimiters')
-        # Allocate KV from currently free VRAM after embedding and Faiss have loaded.
-        import torch
-        free, total = torch.cuda.mem_get_info()
-        fraction = float(deployment.get('gpu_memory_utilization', 0.85 * free / total))
-        args = AsyncEngineArgs(model=deployment['model_id'], revision=deployment['revision'],
-                               tokenizer_revision=deployment['revision'], download_dir=config['paths'].get('model_cache'),
-                               dtype=deployment['unquantized_dtype'], kv_cache_dtype='auto',
-                               max_model_len=self.window, tensor_parallel_size=deployment['tensor_parallel_size'],
-                               max_num_seqs=deployment['initial_max_num_seqs'],
-                               gpu_memory_utilization=fraction, enforce_eager=deployment.get('enforce_eager', False),
-                               generation_config='vllm', language_model_only=True,
-                               kernel_config=KernelConfig(**deployment.get('kernel_config', {})),
-                               enable_log_requests=False, disable_log_stats=True)
-        self.engine = AsyncLLMEngine.from_engine_args(args)
+        self.model = Qwen3_5ForConditionalGeneration.from_pretrained(
+            hf['model_id'], config=checkpoint, dtype=torch.bfloat16,
+            device_map={'': 0}, attn_implementation='sdpa', use_kernels=False, **loading,
+        ).eval()
+        for parameter in self.model.parameters():
+            if parameter.device.type != 'cuda' or parameter.device.index != 0:
+                raise ValueError('all generation parameters must reside on CUDA device 0; offload is not supported')
+            if parameter.is_floating_point() and parameter.dtype != torch.bfloat16:
+                raise ValueError('all floating generation parameters must be BF16')
+        modules = [module for module in self.model.modules() if isinstance(module, Linear4bit)]
+        if not getattr(self.model, 'is_loaded_in_4bit', False) or not modules:
+            raise ValueError('the requested NF4 checkpoint was not loaded as four-bit Linear layers')
+        if any(module.compute_dtype != torch.bfloat16 or module.weight.quant_type != 'nf4'
+               or module.weight.quant_state is None or not module.weight.quant_state.nested for module in modules):
+            raise ValueError('actual NF4 arithmetic or nested quantization differs from the configured NF4 compute')
+        actual_quantization = self.model.config.quantization_config
+        quantization_identity = dict(method='bitsandbytes_nf4', version=bnb_version,
+                                     compute_dtype='bfloat16', linear4bit_modules=len(modules),
+                                     config=actual_quantization.to_dict() if hasattr(actual_quantization, 'to_dict') else actual_quantization)
         self.last_usage = unknown_usage()
-        self.identity = {'backend': 'vllm', 'version': installed, 'model': deployment['model_id'],
-                         'revision': deployment['revision'], 'sampling': self.profile,
-                         'deployment': deployment, 'gpu_memory_utilization': fraction,
-                         'reasoning_parser': 'qwen3_generated_token_boundaries', 'language_model_only': True}
+        self.identity = {'backend': 'transformers', 'version': installed, 'model': hf['model_id'],
+                         'revision': hf['revision'], 'sampling': self.profile,
+                         'context_window_tokens': self.window, 'input_token_budget': self.input_budget,
+                         'max_new_tokens': self.max_tokens,
+                         'dtype': 'bfloat16', 'device': 'cuda:0', 'attn_implementation': 'sdpa',
+                         'use_kernels': False, 'disable_compile': True, 'quantization': quantization_identity,
+                         'reasoning_parser': 'qwen3_generated_token_boundaries',
+                         'presence_penalty_scope': 'generated_tokens_only', 'input_modality': 'text'}
 
     def prepare(self, messages):
         ids = self.tokenizer.apply_chat_template(messages, tokenize=True, return_dict=False, add_generation_prompt=True, **self.chat_options)
@@ -227,47 +271,85 @@ class QwenGenerator:
             raise ValueError(f'context_overflow: prompt={len(ids)}, input_budget={self.input_budget}, output_reserve={self.max_tokens}, window={self.window}')
         return ids
 
+    def _generate(self, ids, seed, stop, expired, deadline):
+        import time
+        import torch
+        from transformers import LogitsProcessor, StoppingCriteria
+
+        owner = self
+
+        class PresencePenalty(LogitsProcessor):
+            def __call__(self, input_ids, scores):
+                # Presence counts each generated token once and excludes the input prompt.
+                seen = input_ids[0, len(ids):].unique()
+                scores[0, seen] -= owner.profile['presence_penalty']
+                return scores
+
+        class StopGeneration(StoppingCriteria):
+            def __call__(self, input_ids, scores, **kwargs):
+                owner.last_usage['observed_output_tokens'] = input_ids.shape[-1] - len(ids)
+                if time.monotonic() >= deadline:
+                    expired.set()
+                return stop.is_set() or expired.is_set()
+
+        options = {key: self.profile[key] for key in ('do_sample', 'temperature', 'top_p', 'top_k', 'min_p', 'repetition_penalty')}
+        processors = [PresencePenalty()] if self.profile['presence_penalty'] else []
+        try:
+            with torch.inference_mode():
+                torch.manual_seed(seed)
+                inputs = torch.tensor([ids], dtype=torch.long, device='cuda:0')
+                output = self.model.generate(
+                    input_ids=inputs, attention_mask=torch.ones_like(inputs),
+                    max_new_tokens=self.max_tokens, num_beams=1, num_return_sequences=1,
+                    logits_processor=processors, stopping_criteria=[StopGeneration()],
+                    use_cache=True, cache_implementation='dynamic',
+                    disable_compile=True, return_dict_in_generate=False, **options,
+                )
+                generated = output[0, len(ids):].tolist()
+                self.last_usage = {'input_tokens': len(ids), 'output_tokens': len(generated),
+                                   'total_tokens': len(ids) + len(generated),
+                                   'reasoning_tokens': None, 'cached_input_tokens': 0}
+                return generated
+        finally:
+            # A cancelled asyncio task must not release this GPU to the next attempt yet.
+            torch.cuda.synchronize(0)
+
     async def generate(self, ids, seed, request_id):
         import asyncio
-        from vllm import SamplingParams
-        options = {key: self.profile[key] for key in ('temperature', 'top_p', 'top_k', 'min_p', 'presence_penalty', 'repetition_penalty')}
-        params = SamplingParams(**options, seed=seed, max_tokens=self.max_tokens)
-        self.last_usage = unknown_usage(len(ids))
-        final = None
-        try:
-            async for result in self.engine.generate({'prompt_token_ids': ids}, params, request_id):
-                final = result
-                self.last_usage['observed_output_tokens'] = len(result.outputs[0].token_ids)
-        except asyncio.CancelledError:
-            await self.engine.abort(request_id)
-            raise
-        except Exception:
-            await self.engine.abort(request_id)
-            raise GenerationError('engine_error', usage=self.last_usage) from None
-        if final is None:
-            raise GenerationError('empty_engine_response', usage=self.last_usage)
-        output = final.outputs[0]
-        generated = list(output.token_ids)
-        usage = {'input_tokens': len(final.prompt_token_ids), 'output_tokens': len(generated),
-                 'total_tokens': len(final.prompt_token_ids) + len(generated),
-                 'reasoning_tokens': 0, 'cached_input_tokens': getattr(final, 'num_cached_tokens', None)}
-        self.last_usage = usage
-        if self.end_think[0] in generated:
-            boundary = generated.index(self.end_think[0]) + 1
-            usage['reasoning_tokens'] = boundary
-            visible = generated[boundary:]
-        elif self.profile['enable_thinking'] or self.start_think[0] in generated:
-            usage['reasoning_tokens'] = None
-            raise GenerationError('reasoning_boundary_missing', usage=usage)
-        else:
-            visible = generated
-        text = self.tokenizer.decode(visible, skip_special_tokens=True).strip()
-        return {'final_response_text': text, 'usage': usage,
-                'status': 'completed' if output.finish_reason == 'stop' else 'failed',
-                'metadata': {'model': self.identity['model'], 'finish_reason': output.finish_reason}}
+        import threading
+        import time
+
+        async with self._lock:
+            self.last_usage = unknown_usage(len(ids))
+            stop, expired = threading.Event(), threading.Event()
+            worker = asyncio.create_task(asyncio.to_thread(
+                self._generate, ids, seed, stop, expired, time.monotonic() + self.timeout,
+            ))
+            try:
+                generated = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                stop.set()
+                try:
+                    await asyncio.shield(worker)
+                except Exception:
+                    pass
+                raise
+            except Exception:
+                raise GenerationError('engine_error', usage=self.last_usage) from None
+            if expired.is_set():
+                raise TimeoutError('request_timeout')
+            if not generated:
+                raise GenerationError('empty_engine_response', usage=self.last_usage)
+            eos = self.model.generation_config.eos_token_id
+            eos = eos if isinstance(eos, (list, tuple)) else [eos]
+            finish_reason = 'stop' if generated[-1] in eos else 'length'
+            return _qwen_response(self, generated, self.last_usage, finish_reason)
 
     async def close(self):
-        self.engine.shutdown()
+        import torch
+        async with self._lock:
+            self.model = None
+            torch.cuda.empty_cache()
 
 
 def make_generator(config):
@@ -275,5 +357,5 @@ def make_generator(config):
     if backend == 'openai_api':
         return OpenAIGenerator(config['generation']['openai_api'])
     if backend == 'huggingface':
-        return QwenGenerator(config)
+        return TransformerGenerator(config)
     raise ValueError('unsupported generation backend')

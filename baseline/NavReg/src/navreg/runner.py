@@ -214,7 +214,7 @@ async def run_experiment(config, directory=None, index_dir=None, serialized_dir=
     manifest = {'run_version': 'navreg-run-v1', 'config': config, 'index_dir': str(bundle.resolve()),
                 'index_metadata': bundle_manifest, 'serialized_dir': str(source.resolve()), 'prompt_assets': assets,
                 'question_order': order, 'questions': [{'question_id': qid, 'question': questions[qid]} for qid in order],
-                'scope': 'debug' if debug or config['deployment']['purpose'] == 'debug_only' else 'formal',
+                'scope': 'debug' if debug else 'formal',
                 'expected_questions': len(order), 'seed_derivation': 'integer_linear_combination_v1'}
     if directory is None:
         directory = require_path(config, 'runs_root') / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8])

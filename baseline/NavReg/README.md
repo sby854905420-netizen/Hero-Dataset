@@ -1,22 +1,28 @@
 # NavReg: Naive RAG baseline
 
-NavReg implements the Hero Dataset Naive RAG baseline: fixed serialization of KG, table, and infobox sources; native-tokenizer chunking; dense embeddings; one unified index per embedding model; one retrieval pass; and LLM answers with citations. There is no reranker.
+NavReg implements the Hero Dataset Naive RAG baseline: fixed serialization of KG, table, and infobox sources; native-tokenizer chunking; BGE-M3 dense embeddings; one unified dense index; one retrieval pass; and LLM answers with citations. There is no reranker.
 
-The first implementation includes serialization, GPU embedding/Faiss, full-source restoration, Qwen/vLLM and OpenAI Responses generation, failure recording, resume, and evaluation. Local execution has been tested. A100 official-FP8 deployment, full 500-question results, and large-K context feasibility remain unverified. Local verification artifacts are not published.
+The implementation includes serialization, GPU embedding/Faiss, full-source restoration, Qwen/Transformers and OpenAI Responses generation, failure recording, resume, and evaluation. It uses one NF4 Qwen checkpoint and BGE-M3 on every machine. Full 500-question results and large-K context feasibility remain unverified. Verification artifacts are not published.
 
-Method rules are in `configs/method.yml` relative to this directory. Machine paths are in the repository's `configs/local.yml` and `configs/cluster.yml`.
+Method rules are in `configs/method.yml` relative to this directory. Runtime paths and token budgets are in the repository's `configs/runtime.yml`; relative paths resolve from that configuration file's directory.
 
 ## Environment and serialization
 
-Use Conda `Hero` with Python 3.11. `environment.yml` and `environment.lock.yml` record the local dependency stack: vLLM 0.33.0, PyTorch 2.14.0/CUDA 13.0, Transformers 5.20.2, NumPy 2.3.5, GPU Faiss, and GCC/G++ 14. These files describe the tested local software stack, not a guarantee of compatibility with every GPU. The API adapter uses HTTPX directly and does not require the OpenAI SDK.
+Use Conda `Hero` with Python 3.11. `environment.yml` specifies PyTorch 2.14.0/CUDA 13.0, Transformers 5.20.2, bitsandbytes 0.50.2, Accelerate, NumPy 2.3.5, GPU Faiss, and GCC/G++ 14. The CUDA/PyTorch/Faiss builds must match the target GPU; token budgets must be measured on that GPU. The API adapter uses HTTPX directly and does not require the OpenAI SDK.
+
+```bash
+conda env create -f baseline/NavReg/environment.yml
+conda activate Hero
+python -m pip install -e baseline/NavReg
+```
 
 First download and extract the [v2.0.0 full corpus](../../Data/data_repository/README.md). A Git clone does not include the large corpus JSONL files. Run from the repository root:
 
 ```bash
-bash scripts/prepare_data.sh --output-dir outputs/serialized/final-v2
+bash scripts/prepare_data.sh --output-dir outputs/serialized/navreg-fixed-serialization-v2
 ```
 
-`--workers` controls serialization threads (default 4); it does not authorize concurrent access to a shared GPU Faiss object. The output directory must not exist. Only these corpus files are read:
+`--workers` controls serialization threads (default 4); it does not authorize concurrent access to a shared GPU Faiss object. The output directory must not exist. The final corpus contains 184,856 sources. Only these corpus files are read:
 
 - `Data/data_repository/kg/kb.jsonl`
 - `Data/data_repository/tables/tables.jsonl`
@@ -32,18 +38,17 @@ Outputs are `records.jsonl` (one complete source with `context_text`, `units`, a
 
 Complete source IDs, including `@occ` suffixes, are unchanged. Units carry original statement-target, table-row, or infobox-field selectors. Serialization units are not embedding chunks.
 
-## Chunking and embeddings
+## Chunking and embedding
 
-Both embedding models run on GPU, with fixed model/tokenizer revisions and separate indexes that each combine all three formats:
+BGE-M3 runs on GPU with a fixed model/tokenizer revision and one index combining all three formats:
 
 | Model | Revision | Dimensions / maximum input |
 | --- | --- | --- |
-| `BAAI/bge-large-en-v1.5` | `d4aa6901d3a41ba39fb536a557fa166f842b0e09` | 1024 / 512 tokens |
 | `BAAI/bge-m3` | `5617a9f61b028005a4858fdac845db406aefb181` | dense-only 1024 / 8192 tokens |
 
-Official model modules provide CLS pooling. Computation and stored vectors use float32, with L2-normalized query/document vectors. Large queries use `Represent this sentence for searching relevant passages: `; passages have no prefix. M3 queries/passages have no prefix, and sparse/ColBERT outputs are disabled. Batch size initially defaults to 1 and may be explicitly adjusted after hardware trials.
+Official model modules provide CLS pooling. Computation and stored vectors use float32, with L2-normalized query/document vectors. Queries and passages have no prefix; sparse/ColBERT outputs are disabled. Batch size initially defaults to 1 and may be explicitly adjusted after hardware trials.
 
-The selected embedding model's native tokenizer counts the entire chunk: body, repeated context, headers, coordinates, and special tokens. No body overlap is used, and different parent sources are never packed together.
+BGE-M3's native tokenizer counts the entire chunk: body, repeated context, headers, coordinates, and special tokens. No body overlap is used, and different parent sources are never packed together.
 
 For retrieval only, each rendered table data-cell value and infobox field value keeps its first **100 tokens**, excluding special tokens. The tail is discarded, not emitted as another fragment. Field names, column names, entity titles, and internal headings are retained. KG statements are not subject to this cell-value cap. Full source serialization and `Data/` are unchanged; chunk coverage records truncation and original coordinates. Changing this rule requires rebuilding the index.
 
@@ -55,7 +60,7 @@ The 100-token value cap does not replace the whole-chunk check. If essential con
 
 ## Index and retrieval
 
-Faiss `IndexFlatIP` provides exact search. The inner product of normalized vectors is cosine similarity. Each bundle is saved in CPU format; jobs load their own copies into RAM/GPU. The runtime partitions GPU storage into segments of at most 1024 vectors to avoid GPU top-K limits, scores every segment, and merges their results. These remain one logical index, not separate indexes by source type. All search/merge work counts toward retrieval time. GPU scratch memory is limited to 64 MiB.
+Faiss `IndexFlatIP` provides exact search. The inner product of normalized vectors is cosine similarity. The bundle is saved in CPU format and loaded into RAM/GPU for each run. The runtime partitions GPU storage into segments of at most 1024 vectors to avoid GPU top-K limits, scores every segment, and merges their results. These remain one logical index, not separate indexes by source type. All search/merge work counts toward retrieval time. GPU scratch memory is limited to 64 MiB.
 
 Experiment **K means text chunks**, with allowed values:
 
@@ -99,30 +104,28 @@ The first two were approved; the third was corrected and then approved. Their qu
 
 Example `provenance` records review status, original IDs, selectors, and upstream revisions. It is not sent to the model, and original review files are not needed at runtime. Demonstrations use `DEMO1_E1`, `DEMO2_E1`, and `DEMO3_E1`; current questions may cite only their own evidence labels. The example assets themselves are not indexed or appended to the retrieval corpus. All demonstration messages count as input tokens in one request, not three extra calls. Prompt assets are saved and compared directly on resume, without file digests.
 
-## Generation models and deployment
+## Generation model and runtime budgets
 
 | Backend | Checkpoint / interface |
 | --- | --- |
-| Server Qwen | `Qwen/Qwen3.8-27B-FP8`, vLLM |
-| Local Qwen debug | `nvidia/Qwen3.8-27B-NVFP4`, vLLM |
+| Qwen | `unsloth/Qwen3.8-27B-unsloth-bnb-4bit`, Transformers 5.20.2 |
 | API | `gpt-6-luna`, OpenAI Responses |
 
-The configuration name `huggingface` selects the local vLLM adapter; both Qwen environments use their checkpoint's official chat template. Model identity, revision, engine, deployment, and effective sampling parameters are recorded. No speculative decoding is enabled.
+The `huggingface` backend uses the same Unsloth checkpoint and official chat template on every machine, pinned to revision `8aa5f05d26b7205477066e1449e0af13f762a299`. Prequantized NF4 weights use bitsandbytes 0.50.2 with BF16 arithmetic, unquantized components, and KV cache. The loader verifies the checkpoint's NF4 configuration and the actual 4-bit modules. No CPU offload or speculative decoding is enabled. Effective model identity, quantization, engine, and sampling parameters are recorded.
 
-| Profile | Total window | Complete input budget | Non-thinking output | Thinking output |
-| --- | ---: | ---: | ---: | ---: |
-| Local RTX 5090 32GB | 49152 | 40960 | 2048 | 8192 |
-| Server A100 80GB target | 262144 | 229376 | 2048 | 32768 |
+The conservative startup settings are:
 
-All budgets are tokens. Total length includes input and output; thinking and final JSON share the output budget. Both modes share an input budget so mode comparison does not change evidence scope. Unused output reservation is not automatically added to the input budget. Local execution has passed small trials; server and maximum-length budgets still need actual validation.
+| Total window | Complete input budget | Non-thinking output | Thinking output |
+| ---: | ---: | ---: | ---: |
+| 16384 | 8192 | 8192 | 8192 |
 
-Server checkpoint revision: `c3a462cc3d38cf351f3b26cbd763469eeb74ef81`. Weight quantization is read from the official FP8 checkpoint; unquantized components and KV cache use BF16. Initial tensor parallelism and sequence concurrency are both 1. Actual A100 kernel selection and peak memory must be checked on the server; FP8 weight storage is not a claim of native FP8 computation or guaranteed speedup.
+All budgets are tokens. The complete input includes instructions, examples, question, and evidence; thinking and final JSON share the output budget. Both modes share the input budget, and unused output reservation does not enlarge it automatically. These are startup budgets, not a verified maximum context length.
 
-Local checkpoint revision: `482ca0f3832238542f8f5295dde86b5f22711d80`. This is NVIDIA's quantized derivative, not a separate Qwen 4-bit release or a 20B-parameter model. The local profile uses mixed NVFP4/FP8 weights, BF16 unquantized components/KV, eager execution, text-only loading, a GPU memory fraction of 0.84, and disabled FlashInfer startup autotuning. Server kernel settings retain engine defaults. Engine-managed recurrent state precision is not forcibly overridden.
+Set `generation.context_window_tokens`, `generation.input_token_budget`, and `generation.max_new_tokens_by_mode` in `configs/runtime.yml` after measuring GPU memory. Pass another file with `--config path/to/runtime.yml` when needed. Keep input plus each mode's output budget within the total window and the checkpoint's native 262144-token limit. Changing machines does not select another model or method. A context overflow reports an error without reducing K or cropping evidence.
 
 ### Qwen sampling modes
 
-The default is `non_thinking`. `--mode thinking` explicitly selects the other profile. Both use the same checkpoint within an environment.
+The default is `non_thinking`. `--mode thinking` explicitly selects the other profile. Both use the same checkpoint.
 
 | Setting | Non-thinking | Thinking |
 | --- | ---: | ---: |
@@ -136,7 +139,7 @@ The default is `non_thinking`. `--mode thinking` explicitly selects the other pr
 | `presence_penalty` | 1.5 | 0.0 |
 | `repetition_penalty` | 1.0 | 1.0 |
 
-These are the profiles recorded from the [fixed official model documentation](https://huggingface.co/Qwen/Qwen3.8-27B/blob/37561816e66b5b9153b1b64c10968c18c1e6f4a0/README.md). The deployed vLLM version is pinned to 0.33.0; unsupported settings must not be silently ignored or replaced with different penalties.
+These are the profiles recorded from the [fixed official model documentation](https://huggingface.co/Qwen/Qwen3.8-27B/blob/37561816e66b5b9153b1b64c10968c18c1e6f4a0/README.md). Transformers is pinned to 5.20.2. A logits processor applies the configured presence penalty; unsupported settings must not be silently ignored or replaced with different penalties.
 
 Qwen reasoning is generated output. The adapter counts actual generated token IDs up to the native closing think boundary, decodes only the final portion, and discards reasoning text and IDs. A think marker prefilled by the chat template belongs to input. If the boundary is missing, preserve observable usage and fail without saving unseparated thought text. Output exhaustion or invalid final JSON is a failure.
 
@@ -152,9 +155,9 @@ Keys are read from the environment variable named by `api_key_env` (default `OPE
 
 Each command runs one complete 500-question experiment unless `--debug --limit N` explicitly requests a subset. There is no automatic five-repeat or K loop. Separate tasks/runs handle different configurations; there is no cross-run comparison tool.
 
-Seed precedence is CLI `--seed`, experiment `execution.run_seed`, then 0. Sort all question IDs as strings, shuffle with an independent `random.Random(run_seed)`, and save the exact order. Qwen additionally derives each request seed from run seed, question ID, and attempt number using a fixed integer formula. This stream is independent of question shuffling. API seeds affect local order only, not server-side sampling. Different seeds do not guarantee different answers or bitwise reproducibility across hardware.
+Seed precedence is CLI `--seed`, experiment `execution.run_seed`, then 0. Sort all question IDs as strings, shuffle with an independent `random.Random(run_seed)`, and save the exact order. Qwen additionally derives each request seed from run seed, question ID, and attempt number using a fixed integer formula. This stream is independent of question shuffling. API seeds affect question order only, not provider sampling. Different seeds do not guarantee different answers or bitwise reproducibility across hardware.
 
-The experiment unit is one complete dataset run. Independent jobs own separate GPU index instances and result directories. The implementation does not shard questions across jobs or merge their answers. Path profiles describe storage locations without changing the retrieval or generation method.
+The experiment unit is one complete dataset run. Each run owns its GPU index instance and result directory. The published workflow runs on one machine; runtime configuration changes paths and budgets without changing the method.
 
 ## Requests, failures, and recovery
 
@@ -162,7 +165,7 @@ Each generation attempt has a 60-second total deadline, including connection, pr
 
 Invalid JSON, output truncation, or invisible/invalid citations do not trigger answer repair or regeneration. A failed prediction has a legal ranking and empty answer/citation arrays. Structurally valid citations are checked against the published Gold set as a diagnostic; the runner never reads gold to decide whether to retry. The current Gold lists do not define complete proof combinations, so Grounded EM and Sufficiency are not computed.
 
-The journal records requests before sending and final content/usage after return. Each completed question is committed durably before the recoverable prediction/trace views are appended. `--resume` requires identical effective configuration, prompt assets, index metadata, seed, and question order. All committed terminal questions, including failures, are skipped. Each run directory has an exclusive writer lock.
+The journal records requests before sending and final content/usage after return. Each completed question is committed durably before the recoverable prediction/trace views are appended. `--resume` requires identical effective configuration, prompt assets, index metadata, seed, and question order. Runs from the previous model or configuration format require a new run directory; do not resume them under the unified configuration. All committed terminal questions, including failures, are skipped. Each run directory has an exclusive writer lock.
 
 A crash after remote execution but before persistence cannot guarantee exactly-once billing or execution. Preserve interrupted attempts and unknown usage. Unobserved elapsed time across an interruption makes `active_seconds=null`, with known subtotals retained; downtime is not treated as query time or guessed away.
 
@@ -171,14 +174,13 @@ A crash after remote execution but before persistence cannot guarantee exactly-o
 From the repository root:
 
 ```bash
-bash scripts/build_index.sh --embedding large --profile local
-bash scripts/build_index.sh --embedding m3 --profile local
+bash scripts/build_index.sh
 bash scripts/run_experiment.sh \
-  --experiment configs/experiments/navreg_large_k5.yml \
-  --profile local --run-dir outputs/runs/local-first --debug --limit 3
+  --experiment configs/experiments/navreg_m3_k5.yml \
+  --run-dir outputs/runs/first --debug --limit 3
 ```
 
-`--profile` selects a path/deployment profile; `--backend openai_api` selects GPT; `--mode thinking` selects Qwen thinking. `--index-dir` selects an index bundle and `--serialized-dir` its complete source records. `--resume` continues an existing run under the same effective configuration.
+Omit `--debug --limit 3` to run the complete 500 questions. `--config` selects runtime paths and budgets; `--backend openai_api` selects GPT; `--mode thinking` selects Qwen thinking. `--index-dir` selects an index bundle and `--serialized-dir` its complete source records. `--resume` continues an existing run under the same effective configuration.
 
 An index bundle contains `index.faiss`, `chunk_map.jsonl`, and `manifest.json` with settings/counts, not file digests. Batch size may change without changing document vectors; model, chunking, representation, or precision changes require a matching rebuilt bundle.
 
@@ -198,4 +200,4 @@ Only mean input/output/total tokens, mean LLM calls, and mean question time are 
 
 ## Release scope
 
-This release includes final data and reusable code. Model weights, indexes, run outputs, functional checks, trial reports, and Chinese/local archives are excluded by `.gitignore`. Full-dataset and A100 validation are pending. The local environment snapshot does not establish compatibility with other machines.
+This release includes final data and reusable code. Model weights, indexes, run outputs, functional checks, trial reports, and Chinese/local archives are excluded by `.gitignore`. Full-dataset results and maximum-context validation remain pending. The environment file does not establish compatibility with every GPU.

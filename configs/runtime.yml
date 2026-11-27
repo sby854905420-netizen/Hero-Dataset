@@ -1,0 +1,19 @@
+# One runtime configuration on every machine. Paths resolve relative to this file.
+paths:
+  data_root: ../Data
+  output_root: ../outputs
+  serialized_root: ../outputs/serialized
+  chunks_root: ../outputs/chunks
+  indexes_root: ../outputs/indexes
+  runs_root: ../outputs/runs
+  model_cache: null  # use the current user's Hugging Face cache
+execution:
+  gpu_device: null  # follow CUDA_VISIBLE_DEVICES; exactly one visible GPU is required
+  embedding_batch_size: 1
+  generation_concurrency: 1
+generation:
+  context_window_tokens: 16384
+  input_token_budget: 8192
+  max_new_tokens_by_mode:
+    non_thinking: 8192
+    thinking: 8192
