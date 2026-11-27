@@ -1,6 +1,6 @@
 # Complete data repository
 
-The default benchmark corpus combines Golden Evidence parents and Negative T1, T2, and T3. It contains **184,856 complete records**: 145,115 KG records, 17,821 tables, and 21,920 infoboxes.
+The default benchmark corpus combines Golden Evidence parents and Negative Sample 1, Negative Sample 2, and Negative Sample 3. It contains **184,856 complete records**: 145,115 KG records, 17,821 tables, and 21,920 infoboxes.
 
 The large JSONL files are hosted in the [v2.0.0 Release](https://github.com/sby854905420-netizen/Hero-Dataset/releases/tag/v2.0.0). A Git clone or automatically generated source archive contains the code and metadata, but not these corpus files.
 
@@ -25,6 +25,6 @@ Data/data_repository/infoboxes/infoboxes.jsonl
 
 The corpus contains complete context, including source content not labeled Gold. Only units listed in `Data/gold_annotations.jsonl` are confirmed Gold evidence. QA and Gold metadata are evaluation inputs; index the three corpus files rather than the metadata files.
 
-The full corpus already includes all three negative collections. Download their [separate archives](../negative_samples/README.md) only when selecting or composing a corpus variant. Their records should not be appended again to the full corpus.
+The full corpus already includes all three Negative Samples. Download their [separate archives](../negative_samples/README.md) only when selecting or composing a corpus variant. Their records should not be appended again to the full corpus.
 
 See [Data/README.md](../README.md) for schemas, counts, evidence selectors, and provenance.

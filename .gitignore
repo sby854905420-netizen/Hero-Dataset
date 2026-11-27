@@ -30,9 +30,9 @@ test_*.py
 /Data/data_repository/kg/kb.jsonl
 /Data/data_repository/tables/tables.jsonl
 /Data/data_repository/infoboxes/infoboxes.jsonl
-/Data/negative_samples/negative_t1/
-/Data/negative_samples/negative_t2/
-/Data/negative_samples/negative_t3/
+/Data/negative_samples/negative_sample_1/
+/Data/negative_samples/negative_sample_2/
+/Data/negative_samples/negative_sample_3/
 
 # Existing NavReg environment/setup archives moved with the method directory.
 /baseline/NavReg/README.txt

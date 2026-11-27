@@ -20,9 +20,9 @@ Data/
 │   ├── tables/tables.jsonl
 │   └── infoboxes/infoboxes.jsonl
 └── negative_samples/
-    ├── negative_t1/
-    ├── negative_t2/
-    └── negative_t3/
+    ├── negative_sample_1/
+    ├── negative_sample_2/
+    └── negative_sample_3/
 ```
 
 The three negative directories are optional: the full corpus already includes their contents. Each separately downloaded negative directory has the same `kg/`, `tables/`, and `infoboxes/` file structure as the full corpus.
@@ -91,9 +91,9 @@ Gold labels apply only to these selected evidence units. A complete table, infob
 | Collection | KG | Tables | Infoboxes | Total |
 | --- | ---: | ---: | ---: | ---: |
 | Golden Evidence parents | 716 | 580 | 406 | 1,702 |
-| Negative T1 | 135 | 40 | 34 | 209 |
-| Negative T2 | 9,499 | 5,431 | 5,652 | 20,582 |
-| Negative T3 | 134,765 | 11,770 | 15,828 | 162,363 |
+| Negative Sample 1 | 135 | 40 | 34 | 209 |
+| Negative Sample 2 | 9,499 | 5,431 | 5,652 | 20,582 |
+| Negative Sample 3 | 134,765 | 11,770 | 15,828 | 162,363 |
 | **Full corpus** | **145,115** | **17,821** | **21,920** | **184,856** |
 
 The four collections contain distinct complete parent records. The released corpus combines them, preserving full records rather than selected evidence fragments. KG `record_uid` and table/infobox `evidence_id` provide complete record IDs. Preserve complete IDs, including any suffixes.
@@ -102,7 +102,7 @@ The four collections contain distinct complete parent records. The released corp
 - **Tables, `tables/tables.jsonl`:** retain page/revision and section context, layered `header`, all `rows`, cell lists/links, and processed spans. Do not expand spans a second time or merge equal-text rows.
 - **Infoboxes, `infoboxes/infoboxes.jsonl`:** retain ordered `rows`, repeated fields, internal headings, image captions, list boundaries, and links. Reducing fields to a dictionary loses repeated occurrences and context.
 
-Existing recovery metadata and entity bindings in raw sources are not Gold labels. See [corpus download instructions](data_repository/README.md) and [negative collection instructions](negative_samples/README.md).
+Existing recovery metadata and entity bindings in raw sources are not Gold labels. See [corpus download instructions](data_repository/README.md) and [Negative Samples instructions](negative_samples/README.md).
 
 ## Complete-record provenance: `source_mapping.jsonl`
 
@@ -121,6 +121,6 @@ Use `repository_file` and `source_record_id` to read the complete released recor
 
 ## Publication boundary
 
-QA and Gold labels reflect final human review. Negative T1 contains model-proposed material left outside confirmed Gold, after excluding complete Gold parents. T2 and T3 undergo shared-repository model screening and global removal of selected supporting parents; this does not guarantee that retrieval-based screening discovered every possible support path.
+QA and Gold labels reflect final human review. Negative Sample 1 contains model-proposed material left outside confirmed Gold, after excluding complete Gold parents. Negative Sample 2 and Negative Sample 3 undergo shared-repository model screening and global removal of selected supporting parents; this does not guarantee that retrieval-based screening discovered every possible support path.
 
 Original dataset answer/entity hints, human review notes, model execution logs, candidate repositories, and supporting records removed during screening are excluded from public metadata and negative packages. See [LICENSE.md](LICENSE.md) for the data licensing status.
